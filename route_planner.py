@@ -17,12 +17,7 @@ import os
 import re
 import sys
 
-import googlemaps
 import yaml
-from google.auth.transport.requests import Request
-from google.oauth2.credentials import Credentials
-from google_auth_oauthlib.flow import InstalledAppFlow
-from googleapiclient.discovery import build
 
 CALENDAR_SCOPES = ["https://www.googleapis.com/auth/calendar.readonly"]
 
@@ -42,12 +37,39 @@ class Stop:
         return f"{self.name} ({self.address}) [指定: {t}]"
 
 
+DEFAULT_CONFIG = {
+    "base_address": "大阪府大阪市北区天神橋6丁目 bonnepuppey天満店",
+    "crate_capacity": 4,
+    "morning_start_time": "08:30",
+    "evening_start_time": "17:00",
+}
+
+
 def load_config(path):
     with open(path, encoding="utf-8") as f:
         return yaml.safe_load(f)
 
 
+def sample_events(target_date):
+    """--demo 用のサンプル予定 (Google Calendar API のレスポンス形式を模したもの)"""
+    def dt(hour, minute):
+        return datetime.datetime.combine(target_date, datetime.time(hour, minute)).isoformat()
+
+    return [
+        {"summary": "🚗 ポチ", "location": "大阪府大阪市北区天神橋1丁目1-1", "start": {"dateTime": dt(8, 30)}},
+        {"summary": "🚗 タロウ [迎えのみ 8:50]", "location": "大阪府大阪市北区西天満2-2-2", "start": {"dateTime": dt(8, 50)}},
+        {"summary": "🚗 ハナ [往復]", "location": "大阪府大阪市北区中崎西3-3-3", "start": {"dateTime": dt(9, 0)}},
+        {"summary": "🚗 モモ [送りのみ 17:30]", "location": "大阪府大阪市北区天神橋4-4-4", "start": {"dateTime": dt(17, 30)}},
+        {"summary": "トリミング 来店 (送迎なし)", "location": "大阪府大阪市北区南森町5-5-5", "start": {"dateTime": dt(10, 0)}},
+    ]
+
+
 def get_calendar_service(config):
+    from google.auth.transport.requests import Request
+    from google.oauth2.credentials import Credentials
+    from google_auth_oauthlib.flow import InstalledAppFlow
+    from googleapiclient.discovery import build
+
     creds = None
     token_file = config["google_oauth_token_file"]
     if os.path.exists(token_file):
@@ -175,22 +197,37 @@ def main():
         default=None,
         help="対象日 (YYYY-MM-DD)。未指定なら今日",
     )
+    parser.add_argument(
+        "--demo",
+        action="store_true",
+        help="サンプルデータを使い、Google Calendar/Maps APIなしで動作確認する",
+    )
     args = parser.parse_args()
-
-    config = load_config(args.config)
 
     target_date = (
         datetime.date.fromisoformat(args.date) if args.date else datetime.date.today()
     )
 
-    api_key = os.environ.get("GOOGLE_MAPS_API_KEY")
-    if not api_key:
-        print("エラー: 環境変数 GOOGLE_MAPS_API_KEY を設定してください。", file=sys.stderr)
-        sys.exit(1)
-    gmaps = googlemaps.Client(key=api_key)
+    if args.demo:
+        config = DEFAULT_CONFIG
+        if os.path.exists(args.config):
+            config = {**DEFAULT_CONFIG, **load_config(args.config)}
+        gmaps = None
+        events = sample_events(target_date)
+        print("*** デモモード: サンプルデータで動作確認中 (実際のカレンダー/Mapsは使用しません) ***\n")
+    else:
+        config = load_config(args.config)
 
-    service = get_calendar_service(config)
-    events = fetch_events(service, config["calendar_id"], target_date)
+        import googlemaps
+
+        api_key = os.environ.get("GOOGLE_MAPS_API_KEY")
+        if not api_key:
+            print("エラー: 環境変数 GOOGLE_MAPS_API_KEY を設定してください。", file=sys.stderr)
+            sys.exit(1)
+        gmaps = googlemaps.Client(key=api_key)
+
+        service = get_calendar_service(config)
+        events = fetch_events(service, config["calendar_id"], target_date)
 
     pickup_stops = []
     dropoff_stops = []
@@ -229,13 +266,23 @@ def main():
 
         trips = split_into_trips(stops, capacity)
         for i, trip_stops in enumerate(trips, start=1):
+            print(f"\n--- {label} 第{i}便 (積載 {len(trip_stops)}/{capacity}) ---")
+
+            if gmaps is None:
+                # デモモード: 最適化はせず、希望時刻順に表示するのみ
+                print(f"{departure.strftime('%H:%M')} 出発: {base_address}")
+                for stop in trip_stops:
+                    print(f"  -> {stop.name} 様宅 ({stop.address})")
+                print(f"  -> {base_address} 帰着")
+                print("  ※ 訪問順・移動時間はGoogle Maps API設定後に自動最適化されます")
+                continue
+
             result = optimize_trip(gmaps, base_address, trip_stops, departure)
             if not result:
-                print(f"\n--- {label} 第{i}便 ---\nルート計算に失敗しました")
+                print("ルート計算に失敗しました")
                 continue
             ordered_stops, legs = result
 
-            print(f"\n--- {label} 第{i}便 (積載 {len(ordered_stops)}/{capacity}) ---")
             current_time = departure
             print(f"{current_time.strftime('%H:%M')} 出発: bonnepuppey天満店")
             for stop, leg in zip(ordered_stops, legs[:-1]):
