@@ -109,11 +109,12 @@ def haversine_km(p1, p2):
 
 
 DEFAULT_CONFIG = {
-    "base_address": "大阪府大阪市北区天神橋6丁目 bonnepuppey天満店",
+    "base_address": "大阪府大阪市北区天神橋4-6-17 上谷ビル1F.2F",
     "crate_capacity": {"特大": 2, "大": 7, "中": 9, "小": 12},
     "default_crate_size": "中",
     "morning_start_time": "08:30",
     "evening_start_time": "17:00",
+    "departure_buffer_minutes": 15,
 }
 
 
@@ -368,17 +369,18 @@ def build_route(target_date, config, events, geocode_enabled=True):
             stop.distance_from_base = haversine_km(base_coords, geocode(stop.address, cache))
         save_geocode_cache(cache)
 
-    morning_start = datetime.datetime.combine(
+    default_morning_start = datetime.datetime.combine(
         target_date, datetime.time.fromisoformat(config["morning_start_time"])
     )
-    evening_start = datetime.datetime.combine(
+    default_evening_start = datetime.datetime.combine(
         target_date, datetime.time.fromisoformat(config["evening_start_time"])
     )
+    buffer_minutes = config.get("departure_buffer_minutes", 15)
 
     trips_data = []
-    for label, stops, departure in (
-        ("朝のお迎え便", pickup_stops, morning_start),
-        ("夕方の送り便", dropoff_stops, evening_start),
+    for label, stops, default_start in (
+        ("朝のお迎え便", pickup_stops, default_morning_start),
+        ("夕方の送り便", dropoff_stops, default_evening_start),
     ):
         if not stops:
             trips_data.append({"label": label, "rows": None})
@@ -392,6 +394,13 @@ def build_route(target_date, config, events, geocode_enabled=True):
                 size = stop.crate_size or default_crate_size
                 size_counts[size] = size_counts.get(size, 0) + 1
                 loaded_units += crate_weights.get(size, crate_weights[default_crate_size])
+
+            requested_times = [s.requested_time for s in trip_stops if s.requested_time]
+            if requested_times:
+                earliest = datetime.datetime.combine(target_date, min(requested_times))
+                departure = earliest - datetime.timedelta(minutes=buffer_minutes)
+            else:
+                departure = default_start
 
             trip = {
                 "label": label,
