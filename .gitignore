@@ -3,3 +3,5 @@ __pycache__/
 token.json
 credentials.json
 config.yaml
+.geocode_cache.json
+送迎ルート_*.html

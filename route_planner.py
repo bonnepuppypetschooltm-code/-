@@ -14,9 +14,13 @@ Google カレンダーの予定から「🚗」マーク付きの園児を抽出
 
 import argparse
 import datetime
+import json
+import math
 import os
 import re
 import sys
+import urllib.parse
+import urllib.request
 
 import yaml
 
@@ -26,16 +30,65 @@ CAR_MARK = "🚗"
 TAG_PATTERN = re.compile(r"[\[(]([^\])]*)[\])]")
 TIME_PATTERN = re.compile(r"(\d{1,2}):(\d{2})")
 
+GEOCODE_CACHE_FILE = ".geocode_cache.json"
+GEOCODE_URL = "https://msearch.gsi.go.jp/address-search/AddressSearch?q="
+
 
 class Stop:
     def __init__(self, name, address, requested_time=None):
         self.name = name
         self.address = address
         self.requested_time = requested_time
+        self.distance_from_base = None
 
     def __repr__(self):
         t = self.requested_time.strftime("%H:%M") if self.requested_time else "-"
         return f"{self.name} ({self.address}) [指定: {t}]"
+
+
+def load_geocode_cache():
+    if os.path.exists(GEOCODE_CACHE_FILE):
+        with open(GEOCODE_CACHE_FILE, encoding="utf-8") as f:
+            return json.load(f)
+    return {}
+
+
+def save_geocode_cache(cache):
+    with open(GEOCODE_CACHE_FILE, "w", encoding="utf-8") as f:
+        json.dump(cache, f, ensure_ascii=False, indent=2)
+
+
+def geocode(address, cache):
+    """住所から (緯度, 経度) を取得する (国土地理院 住所検索API、無料・APIキー不要)"""
+    if address in cache:
+        return cache[address]
+    try:
+        url = GEOCODE_URL + urllib.parse.quote(address)
+        with urllib.request.urlopen(url, timeout=5) as resp:
+            data = json.load(resp)
+        if data:
+            lon, lat = data[0]["geometry"]["coordinates"]
+            cache[address] = [lat, lon]
+        else:
+            cache[address] = None
+    except Exception:
+        cache[address] = None
+    return cache[address]
+
+
+def haversine_km(p1, p2):
+    if p1 is None or p2 is None:
+        return None
+    lat1, lon1 = p1
+    lat2, lon2 = p2
+    r = 6371.0
+    dlat = math.radians(lat2 - lat1)
+    dlon = math.radians(lon2 - lon1)
+    a = (
+        math.sin(dlat / 2) ** 2
+        + math.cos(math.radians(lat1)) * math.cos(math.radians(lat2)) * math.sin(dlon / 2) ** 2
+    )
+    return 2 * r * math.asin(math.sqrt(a))
 
 
 DEFAULT_CONFIG = {
@@ -159,11 +212,17 @@ def classify_stop(name, tag_text, location, event_time):
 
 
 def split_into_trips(stops, capacity):
-    """指定時刻があるものを優先しつつ、capacity頭ずつトリップに分割する"""
-    sorted_stops = sorted(
-        stops,
-        key=lambda s: s.requested_time or datetime.time(23, 59),
-    )
+    """capacity頭ずつトリップに分割する。
+
+    時刻指定があるお宅はその時刻順を優先する。時刻指定がないお宅は、
+    店舗から遠い順 (遠方を先に回り、店舗近くで締めくくる) に並べる。
+    """
+    def sort_key(s):
+        if s.requested_time:
+            return (0, s.requested_time, 0.0)
+        return (1, datetime.time(0, 0), -(s.distance_from_base or 0.0))
+
+    sorted_stops = sorted(stops, key=sort_key)
     return [sorted_stops[i : i + capacity] for i in range(0, len(sorted_stops), capacity)]
 
 
@@ -226,7 +285,9 @@ def main():
         service = get_calendar_service(config)
         events = fetch_events(service, config["calendar_id"], target_date)
 
-    base_address, capacity, trips_data = build_route(target_date, config, events)
+    base_address, capacity, trips_data = build_route(
+        target_date, config, events, geocode_enabled=not args.demo
+    )
 
     html = render_html(target_date, base_address, capacity, trips_data)
     output_path = args.output or f"送迎ルート_{target_date.isoformat()}.html"
@@ -241,7 +302,7 @@ def main():
         webbrowser.open(f"file://{os.path.abspath(output_path)}")
 
 
-def build_route(target_date, config, events):
+def build_route(target_date, config, events, geocode_enabled=True):
     pickup_stops = []
     dropoff_stops = []
     for event in events:
@@ -257,6 +318,13 @@ def build_route(target_date, config, events):
 
     base_address = config["base_address"]
     capacity = config["crate_capacity"]
+
+    if geocode_enabled:
+        cache = load_geocode_cache()
+        base_coords = geocode(base_address, cache)
+        for stop in pickup_stops + dropoff_stops:
+            stop.distance_from_base = haversine_km(base_coords, geocode(stop.address, cache))
+        save_geocode_cache(cache)
 
     morning_start = datetime.datetime.combine(
         target_date, datetime.time.fromisoformat(config["morning_start_time"])
