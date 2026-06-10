@@ -1,7 +1,8 @@
 # 犬の幼稚園 送迎ルート自動化ツール (bonnepuppey天満店)
 
-Google カレンダーの予定から送迎対象の園児を抽出し、Google Maps API で
-クレート(車載数)制限を考慮した最適な送迎ルートを自動計算します。
+Google カレンダーの予定から送迎対象の園児を抽出し、クレート(車載数)制限を
+考慮して送迎ルートの一覧表を作成します。各便には、そのままタップすれば
+Googleマップでナビが開くリンクが付きます(APIキー・クレジットカード登録は不要です)。
 
 ## カレンダーの記法ルール
 
@@ -43,22 +44,13 @@ python3 route_planner.py --demo
    pip install -r requirements.txt
    ```
 
-2. Google Calendar API の認証情報を取得
+2. Google Calendar API の認証情報を取得(無料・クレジットカード不要)
 
    - [Google Cloud Console](https://console.cloud.google.com/) でプロジェクトを作成
    - 「Google Calendar API」を有効化
    - 「OAuth クライアント ID」(デスクトップアプリ)を作成し、`credentials.json` としてこのディレクトリに保存
 
-3. Google Maps Platform の API キーを取得
-
-   - 「Directions API」を有効化し、APIキーを発行
-   - 環境変数として設定
-
-     ```bash
-     export GOOGLE_MAPS_API_KEY="あなたのAPIキー"
-     ```
-
-4. `config.example.yaml` を `config.yaml` としてコピーし、拠点住所・クレート数・出発時刻を編集
+3. `config.example.yaml` を `config.yaml` としてコピーし、拠点住所・クレート数・出発時刻を編集
 
    ```bash
    cp config.example.yaml config.yaml
@@ -82,7 +74,8 @@ python route_planner.py --date 2026-06-15
 ## 出力
 
 実行すると `送迎ルート_YYYY-MM-DD.html` という表形式のファイルが作成され、
-自動的にブラウザで開きます(便ごとに「順番・名前・住所・到着予定・移動距離・移動時間」の表)。
+自動的にブラウザで開きます(便ごとに「順番・名前・住所・希望時刻」の表と、
+「Googleマップでルートを開く」ボタン)。
 
 - 出力先を変えたい場合: `--output 保存先.html`
 - ブラウザで自動的に開かないようにする場合: `--no-open`

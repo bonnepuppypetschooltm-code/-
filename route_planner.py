@@ -2,7 +2,8 @@
 """犬の幼稚園 送迎ルート自動作成ツール
 
 Google カレンダーの予定から「🚗」マーク付きの園児を抽出し、
-Google Maps API でクレート(車載数)制限を考慮した送迎ルートを最適化して表示する。
+クレート(車載数)制限を考慮した送迎ルート表(HTML)を作成する。
+各便にはGoogleマップで経路を開けるリンクを付与する。
 
 カレンダー記法:
   タイトル: 🚗 犬の名前 [タグ]
@@ -166,27 +167,23 @@ def split_into_trips(stops, capacity):
     return [sorted_stops[i : i + capacity] for i in range(0, len(sorted_stops), capacity)]
 
 
-def optimize_trip(gmaps, base_address, stops, departure_time):
-    if not stops:
-        return None
+def build_maps_url(base_address, stop_addresses):
+    """APIキー不要の Google Maps 経路リンクを作る (拠点 -> 各お宅 -> 拠点)"""
+    import urllib.parse
 
-    waypoints = [s.address for s in stops]
-    directions = gmaps.directions(
-        origin=base_address,
-        destination=base_address,
-        waypoints=waypoints,
-        optimize_waypoints=True,
-        mode="driving",
-        departure_time=departure_time,
+    points = [base_address] + stop_addresses + [base_address]
+    encoded = [urllib.parse.quote(p, safe="") for p in points]
+    origin = encoded[0]
+    destination = encoded[-1]
+    waypoints = "%7C".join(encoded[1:-1])
+
+    url = (
+        "https://www.google.com/maps/dir/?api=1"
+        f"&origin={origin}&destination={destination}&travelmode=driving"
     )
-    if not directions:
-        return None
-
-    route = directions[0]
-    order = route["waypoint_order"]
-    ordered_stops = [stops[i] for i in order]
-    legs = route["legs"]
-    return ordered_stops, legs
+    if waypoints:
+        url += f"&waypoints={waypoints}"
+    return url
 
 
 def main():
@@ -222,24 +219,14 @@ def main():
         config = DEFAULT_CONFIG
         if os.path.exists(args.config):
             config = {**DEFAULT_CONFIG, **load_config(args.config)}
-        gmaps = None
         events = sample_events(target_date)
-        print("*** デモモード: サンプルデータで動作確認中 (実際のカレンダー/Mapsは使用しません) ***\n")
+        print("*** デモモード: サンプルデータで動作確認中 (実際のカレンダーは使用しません) ***\n")
     else:
         config = load_config(args.config)
-
-        import googlemaps
-
-        api_key = os.environ.get("GOOGLE_MAPS_API_KEY")
-        if not api_key:
-            print("エラー: 環境変数 GOOGLE_MAPS_API_KEY を設定してください。", file=sys.stderr)
-            sys.exit(1)
-        gmaps = googlemaps.Client(key=api_key)
-
         service = get_calendar_service(config)
         events = fetch_events(service, config["calendar_id"], target_date)
 
-    base_address, capacity, trips_data = build_route(target_date, config, gmaps, events)
+    base_address, capacity, trips_data = build_route(target_date, config, events)
 
     html = render_html(target_date, base_address, capacity, trips_data)
     output_path = args.output or f"送迎ルート_{target_date.isoformat()}.html"
@@ -254,7 +241,7 @@ def main():
         webbrowser.open(f"file://{os.path.abspath(output_path)}")
 
 
-def build_route(target_date, config, gmaps, events):
+def build_route(target_date, config, events):
     pickup_stops = []
     dropoff_stops = []
     for event in events:
@@ -295,46 +282,11 @@ def build_route(target_date, config, gmaps, events):
                 "loaded": len(trip_stops),
                 "departure": departure.strftime("%H:%M"),
                 "rows": [],
-                "return_time": None,
-                "return_distance": None,
-                "return_duration": None,
-                "note": None,
+                "maps_url": build_maps_url(base_address, [s.address for s in trip_stops]),
             }
-
-            if gmaps is None:
-                # デモモード: 最適化はせず、希望時刻順に表示するのみ
-                for stop in trip_stops:
-                    trip["rows"].append(
-                        {"name": stop.name, "address": stop.address, "eta": "-", "distance": "-", "duration": "-"}
-                    )
-                trip["note"] = "訪問順・移動時間はGoogle Maps API設定後に自動最適化されます"
-                trips_data.append(trip)
-                continue
-
-            result = optimize_trip(gmaps, base_address, trip_stops, departure)
-            if not result:
-                trip["note"] = "ルート計算に失敗しました"
-                trips_data.append(trip)
-                continue
-            ordered_stops, legs = result
-
-            current_time = departure
-            for stop, leg in zip(ordered_stops, legs[:-1]):
-                current_time += datetime.timedelta(seconds=leg["duration"]["value"])
-                trip["rows"].append(
-                    {
-                        "name": stop.name,
-                        "address": stop.address,
-                        "eta": current_time.strftime("%H:%M"),
-                        "distance": leg["distance"]["text"],
-                        "duration": leg["duration"]["text"],
-                    }
-                )
-            return_leg = legs[-1]
-            current_time += datetime.timedelta(seconds=return_leg["duration"]["value"])
-            trip["return_time"] = current_time.strftime("%H:%M")
-            trip["return_distance"] = return_leg["distance"]["text"]
-            trip["return_duration"] = return_leg["duration"]["text"]
+            for stop in trip_stops:
+                t = stop.requested_time.strftime("%H:%M") if stop.requested_time else "-"
+                trip["rows"].append({"name": stop.name, "address": stop.address, "time": t})
             trips_data.append(trip)
 
     return base_address, capacity, trips_data
@@ -351,8 +303,9 @@ def render_html(target_date, base_address, capacity, trips_data):
         "table{border-collapse:collapse;width:100%;margin-top:8px;}"
         "th,td{border:1px solid #ccc;padding:8px;text-align:left;}"
         "th{background:#f0f0f0;}"
-        ".note{color:#a00;margin-top:6px;}"
         ".meta{color:#555;}"
+        ".maps-link{display:inline-block;margin-top:8px;padding:6px 12px;"
+        "background:#1a73e8;color:#fff;text-decoration:none;border-radius:4px;}"
         "</style></head><body>"
     )
     parts.append(f"<h1>送迎ルート {target_date.isoformat()}</h1>")
@@ -364,24 +317,15 @@ def render_html(target_date, base_address, capacity, trips_data):
             continue
 
         parts.append(f"<h2>{trip['label']} 第{trip['trip_no']}便 (積載 {trip['loaded']}/{capacity})</h2>")
-        parts.append("<table><tr><th>順番</th><th>名前</th><th>住所</th><th>到着予定</th><th>移動距離</th><th>移動時間</th></tr>")
-        parts.append(
-            f"<tr><td>出発</td><td colspan='2'>{base_address}</td>"
-            f"<td>{trip['departure']}</td><td>-</td><td>-</td></tr>"
-        )
+        parts.append("<table><tr><th>順番</th><th>名前</th><th>住所</th><th>希望時刻</th></tr>")
+        parts.append(f"<tr><td>出発</td><td colspan='2'>{base_address}</td><td>{trip['departure']}</td></tr>")
         for i, row in enumerate(trip["rows"], start=1):
             parts.append(
-                f"<tr><td>{i}</td><td>{row['name']}</td><td>{row['address']}</td>"
-                f"<td>{row['eta']}</td><td>{row['distance']}</td><td>{row['duration']}</td></tr>"
+                f"<tr><td>{i}</td><td>{row['name']}</td><td>{row['address']}</td><td>{row['time']}</td></tr>"
             )
-        if trip["return_time"]:
-            parts.append(
-                f"<tr><td>帰着</td><td colspan='2'>{base_address}</td>"
-                f"<td>{trip['return_time']}</td><td>{trip['return_distance']}</td><td>{trip['return_duration']}</td></tr>"
-            )
+        parts.append(f"<tr><td>帰着</td><td colspan='3'>{base_address}</td></tr>")
         parts.append("</table>")
-        if trip["note"]:
-            parts.append(f"<p class='note'>※ {trip['note']}</p>")
+        parts.append(f"<a class='maps-link' href='{trip['maps_url']}' target='_blank'>Googleマップでルートを開く</a>")
 
     parts.append("</body></html>")
     return "".join(parts)

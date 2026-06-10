@@ -18,5 +18,3 @@ calendar_id: "primary"
 # Google API 認証情報ファイルのパス
 google_oauth_client_secret_file: "credentials.json"
 google_oauth_token_file: "token.json"
-
-# Google Maps Platform の API キーは環境変数 GOOGLE_MAPS_API_KEY で渡してください
