@@ -30,20 +30,36 @@ CAR_MARK = "🚗"
 TAG_PATTERN = re.compile(r"[\[(]([^\])]*)[\])]")
 TIME_PATTERN = re.compile(r"(\d{1,2}):(\d{2})")
 
+# 「特大」は「大」の部分文字列を含むため、長い名前から先に判定する
+CRATE_SIZE_ORDER = ["特大", "大", "中", "小"]
+
 GEOCODE_CACHE_FILE = ".geocode_cache.json"
 GEOCODE_URL = "https://msearch.gsi.go.jp/address-search/AddressSearch?q="
 
 
 class Stop:
-    def __init__(self, name, address, requested_time=None):
+    def __init__(self, name, address, requested_time=None, crate_size=None):
         self.name = name
         self.address = address
         self.requested_time = requested_time
+        self.crate_size = crate_size
         self.distance_from_base = None
 
     def __repr__(self):
         t = self.requested_time.strftime("%H:%M") if self.requested_time else "-"
-        return f"{self.name} ({self.address}) [指定: {t}]"
+        return f"{self.name} ({self.address}) [指定: {t}, クレート: {self.crate_size}]"
+
+
+def crate_units(crate_capacity):
+    """crate_capacity: {サイズ名: そのサイズだけで車に積める最大数} から
+    車の総容量(units)と、サイズごとの占有units数を計算する。
+    """
+    counts = list(crate_capacity.values())
+    capacity_units = counts[0]
+    for c in counts[1:]:
+        capacity_units = capacity_units * c // math.gcd(capacity_units, c)
+    weights = {size: capacity_units // count for size, count in crate_capacity.items()}
+    return capacity_units, weights
 
 
 def load_geocode_cache():
@@ -93,7 +109,8 @@ def haversine_km(p1, p2):
 
 DEFAULT_CONFIG = {
     "base_address": "大阪府大阪市北区天神橋6丁目 bonnepuppey天満店",
-    "crate_capacity": 4,
+    "crate_capacity": {"特大": 2, "大": 7, "中": 9, "小": 12},
+    "default_crate_size": "中",
     "morning_start_time": "08:30",
     "evening_start_time": "17:00",
 }
@@ -110,10 +127,10 @@ def sample_events(target_date):
         return datetime.datetime.combine(target_date, datetime.time(hour, minute)).isoformat()
 
     return [
-        {"summary": "🚗 ポチ", "location": "大阪府大阪市北区天神橋1丁目1-1", "start": {"dateTime": dt(8, 30)}},
-        {"summary": "🚗 タロウ [迎えのみ 8:50]", "location": "大阪府大阪市北区西天満2-2-2", "start": {"dateTime": dt(8, 50)}},
-        {"summary": "🚗 ハナ [往復]", "location": "大阪府大阪市北区中崎西3-3-3", "start": {"dateTime": dt(9, 0)}},
-        {"summary": "🚗 モモ [送りのみ 17:30]", "location": "大阪府大阪市北区天神橋4-4-4", "start": {"dateTime": dt(17, 30)}},
+        {"summary": "🚗 ポチ [大]", "location": "大阪府大阪市北区天神橋1丁目1-1", "start": {"dateTime": dt(8, 30)}},
+        {"summary": "🚗 タロウ [迎えのみ 8:50 中]", "location": "大阪府大阪市北区西天満2-2-2", "start": {"dateTime": dt(8, 50)}},
+        {"summary": "🚗 ハナ [往復 小]", "location": "大阪府大阪市北区中崎西3-3-3", "start": {"dateTime": dt(9, 0)}},
+        {"summary": "🚗 モモ [送りのみ 17:30 大]", "location": "大阪府大阪市北区天神橋4-4-4", "start": {"dateTime": dt(17, 30)}},
         {"summary": "トリミング 来店 (送迎なし)", "location": "大阪府大阪市北区南森町5-5-5", "start": {"dateTime": dt(10, 0)}},
     ]
 
@@ -198,21 +215,27 @@ def classify_stop(name, tag_text, location, event_time):
     if tag_time_match:
         tag_time = datetime.time(int(tag_time_match.group(1)), int(tag_time_match.group(2)))
 
+    crate_size = None
+    for size in CRATE_SIZE_ORDER:
+        if size in tag_text:
+            crate_size = size
+            break
+
     pickup_stop = None
     dropoff_stop = None
 
     if is_roundtrip or has_pickup_tag:
         t = tag_time if has_pickup_tag else event_time
-        pickup_stop = Stop(name, location, t)
+        pickup_stop = Stop(name, location, t, crate_size)
     if is_roundtrip or has_dropoff_tag:
         t = tag_time if has_dropoff_tag else event_time
-        dropoff_stop = Stop(name, location, t)
+        dropoff_stop = Stop(name, location, t, crate_size)
 
     return pickup_stop, dropoff_stop
 
 
-def split_into_trips(stops, capacity):
-    """capacity頭ずつトリップに分割する。
+def split_into_trips(stops, capacity_units, crate_weights, default_crate_size):
+    """クレートサイズごとの占有units数をもとに、車に収まる範囲でトリップに分割する。
 
     時刻指定があるお宅はその時刻順を優先する。時刻指定がないお宅は、
     店舗から遠い順 (遠方を先に回り、店舗近くで締めくくる) に並べる。
@@ -223,7 +246,22 @@ def split_into_trips(stops, capacity):
         return (1, datetime.time(0, 0), -(s.distance_from_base or 0.0))
 
     sorted_stops = sorted(stops, key=sort_key)
-    return [sorted_stops[i : i + capacity] for i in range(0, len(sorted_stops), capacity)]
+
+    trips = []
+    current = []
+    current_units = 0
+    for stop in sorted_stops:
+        size = stop.crate_size or default_crate_size
+        units = crate_weights.get(size, crate_weights[default_crate_size])
+        if current and current_units + units > capacity_units:
+            trips.append(current)
+            current = []
+            current_units = 0
+        current.append(stop)
+        current_units += units
+    if current:
+        trips.append(current)
+    return trips
 
 
 def build_maps_url(base_address, stop_addresses):
@@ -285,11 +323,11 @@ def main():
         service = get_calendar_service(config)
         events = fetch_events(service, config["calendar_id"], target_date)
 
-    base_address, capacity, trips_data = build_route(
+    base_address, trips_data = build_route(
         target_date, config, events, geocode_enabled=not args.demo
     )
 
-    html = render_html(target_date, base_address, capacity, trips_data)
+    html = render_html(target_date, base_address, trips_data)
     output_path = args.output or f"送迎ルート_{target_date.isoformat()}.html"
     with open(output_path, "w", encoding="utf-8") as f:
         f.write(html)
@@ -317,7 +355,9 @@ def build_route(target_date, config, events, geocode_enabled=True):
             dropoff_stops.append(dropoff)
 
     base_address = config["base_address"]
-    capacity = config["crate_capacity"]
+    crate_capacity = config["crate_capacity"]
+    default_crate_size = config["default_crate_size"]
+    capacity_units, crate_weights = crate_units(crate_capacity)
 
     if geocode_enabled:
         cache = load_geocode_cache()
@@ -342,25 +382,35 @@ def build_route(target_date, config, events, geocode_enabled=True):
             trips_data.append({"label": label, "rows": None})
             continue
 
-        trips = split_into_trips(stops, capacity)
+        trips = split_into_trips(stops, capacity_units, crate_weights, default_crate_size)
         for i, trip_stops in enumerate(trips, start=1):
+            size_counts = {}
+            loaded_units = 0
+            for stop in trip_stops:
+                size = stop.crate_size or default_crate_size
+                size_counts[size] = size_counts.get(size, 0) + 1
+                loaded_units += crate_weights.get(size, crate_weights[default_crate_size])
+
             trip = {
                 "label": label,
                 "trip_no": i,
-                "loaded": len(trip_stops),
+                "size_counts": size_counts,
+                "loaded_units": loaded_units,
+                "capacity_units": capacity_units,
                 "departure": departure.strftime("%H:%M"),
                 "rows": [],
                 "maps_url": build_maps_url(base_address, [s.address for s in trip_stops]),
             }
             for stop in trip_stops:
                 t = stop.requested_time.strftime("%H:%M") if stop.requested_time else "-"
-                trip["rows"].append({"name": stop.name, "address": stop.address, "time": t})
+                size = stop.crate_size or f"{default_crate_size}(既定)"
+                trip["rows"].append({"name": stop.name, "address": stop.address, "time": t, "crate": size})
             trips_data.append(trip)
 
-    return base_address, capacity, trips_data
+    return base_address, trips_data
 
 
-def render_html(target_date, base_address, capacity, trips_data):
+def render_html(target_date, base_address, trips_data):
     parts = []
     parts.append("<!DOCTYPE html><html lang='ja'><head><meta charset='utf-8'>")
     parts.append(f"<title>送迎ルート {target_date.isoformat()}</title>")
@@ -377,21 +427,26 @@ def render_html(target_date, base_address, capacity, trips_data):
         "</style></head><body>"
     )
     parts.append(f"<h1>送迎ルート {target_date.isoformat()}</h1>")
-    parts.append(f"<p class='meta'>拠点: {base_address}<br>クレート数(1便あたり最大): {capacity}</p>")
+    parts.append(f"<p class='meta'>拠点: {base_address}</p>")
 
     for trip in trips_data:
         if trip["rows"] is None:
             parts.append(f"<h2>{trip['label']}</h2><p>対象なし</p>")
             continue
 
-        parts.append(f"<h2>{trip['label']} 第{trip['trip_no']}便 (積載 {trip['loaded']}/{capacity})</h2>")
-        parts.append("<table><tr><th>順番</th><th>名前</th><th>住所</th><th>希望時刻</th></tr>")
-        parts.append(f"<tr><td>出発</td><td colspan='2'>{base_address}</td><td>{trip['departure']}</td></tr>")
+        size_text = ", ".join(f"{size}{count}" for size, count in trip["size_counts"].items())
+        parts.append(
+            f"<h2>{trip['label']} 第{trip['trip_no']}便 "
+            f"(積載: {size_text} / 容量 {trip['loaded_units']}/{trip['capacity_units']})</h2>"
+        )
+        parts.append("<table><tr><th>順番</th><th>名前</th><th>住所</th><th>希望時刻</th><th>クレート</th></tr>")
+        parts.append(f"<tr><td>出発</td><td colspan='2'>{base_address}</td><td>{trip['departure']}</td><td>-</td></tr>")
         for i, row in enumerate(trip["rows"], start=1):
             parts.append(
-                f"<tr><td>{i}</td><td>{row['name']}</td><td>{row['address']}</td><td>{row['time']}</td></tr>"
+                f"<tr><td>{i}</td><td>{row['name']}</td><td>{row['address']}</td>"
+                f"<td>{row['time']}</td><td>{row['crate']}</td></tr>"
             )
-        parts.append(f"<tr><td>帰着</td><td colspan='3'>{base_address}</td></tr>")
+        parts.append(f"<tr><td>帰着</td><td colspan='4'>{base_address}</td></tr>")
         parts.append("</table>")
         parts.append(f"<a class='maps-link' href='{trip['maps_url']}' target='_blank'>Googleマップでルートを開く</a>")
 
