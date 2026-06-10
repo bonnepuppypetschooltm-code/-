@@ -1,0 +1,22 @@
+# config.yaml としてコピーして使用してください(本ファイルはコピー用テンプレート)
+
+# 拠点(犬の幼稚園 bonnepuppey 天満店)の住所
+base_address: "大阪府大阪市北区天神橋6丁目 bonnepuppey天満店"
+
+# 車に積めるクレートの数(1便あたりの最大頭数)
+crate_capacity: 4
+
+# 朝の「迎え」便の出発時刻 (拠点発)
+morning_start_time: "08:30"
+
+# 夕方の「送り」便の出発時刻 (拠点発)
+evening_start_time: "17:00"
+
+# Google カレンダー側の設定
+calendar_id: "primary"
+
+# Google API 認証情報ファイルのパス
+google_oauth_client_secret_file: "credentials.json"
+google_oauth_token_file: "token.json"
+
+# Google Maps Platform の API キーは環境変数 GOOGLE_MAPS_API_KEY で渡してください
