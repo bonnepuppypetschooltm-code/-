@@ -202,6 +202,16 @@ def main():
         action="store_true",
         help="サンプルデータを使い、Google Calendar/Maps APIなしで動作確認する",
     )
+    parser.add_argument(
+        "--output",
+        default=None,
+        help="出力するHTMLファイルのパス(未指定なら 送迎ルート_YYYY-MM-DD.html)",
+    )
+    parser.add_argument(
+        "--no-open",
+        action="store_true",
+        help="作成後にブラウザで自動的に開かない",
+    )
     args = parser.parse_args()
 
     target_date = (
@@ -229,6 +239,22 @@ def main():
         service = get_calendar_service(config)
         events = fetch_events(service, config["calendar_id"], target_date)
 
+    base_address, capacity, trips_data = build_route(target_date, config, gmaps, events)
+
+    html = render_html(target_date, base_address, capacity, trips_data)
+    output_path = args.output or f"送迎ルート_{target_date.isoformat()}.html"
+    with open(output_path, "w", encoding="utf-8") as f:
+        f.write(html)
+
+    print(f"作成しました: {os.path.abspath(output_path)}")
+
+    if not args.no_open:
+        import webbrowser
+
+        webbrowser.open(f"file://{os.path.abspath(output_path)}")
+
+
+def build_route(target_date, config, gmaps, events):
     pickup_stops = []
     dropoff_stops = []
     for event in events:
@@ -245,10 +271,6 @@ def main():
     base_address = config["base_address"]
     capacity = config["crate_capacity"]
 
-    print(f"=== {target_date.isoformat()} 送迎ルート ===")
-    print(f"拠点: {base_address}")
-    print(f"クレート数(1便あたり最大): {capacity}")
-
     morning_start = datetime.datetime.combine(
         target_date, datetime.time.fromisoformat(config["morning_start_time"])
     )
@@ -256,47 +278,113 @@ def main():
         target_date, datetime.time.fromisoformat(config["evening_start_time"])
     )
 
+    trips_data = []
     for label, stops, departure in (
         ("朝のお迎え便", pickup_stops, morning_start),
         ("夕方の送り便", dropoff_stops, evening_start),
     ):
         if not stops:
-            print(f"\n--- {label} ---\n対象なし")
+            trips_data.append({"label": label, "rows": None})
             continue
 
         trips = split_into_trips(stops, capacity)
         for i, trip_stops in enumerate(trips, start=1):
-            print(f"\n--- {label} 第{i}便 (積載 {len(trip_stops)}/{capacity}) ---")
+            trip = {
+                "label": label,
+                "trip_no": i,
+                "loaded": len(trip_stops),
+                "departure": departure.strftime("%H:%M"),
+                "rows": [],
+                "return_time": None,
+                "return_distance": None,
+                "return_duration": None,
+                "note": None,
+            }
 
             if gmaps is None:
                 # デモモード: 最適化はせず、希望時刻順に表示するのみ
-                print(f"{departure.strftime('%H:%M')} 出発: {base_address}")
                 for stop in trip_stops:
-                    print(f"  -> {stop.name} 様宅 ({stop.address})")
-                print(f"  -> {base_address} 帰着")
-                print("  ※ 訪問順・移動時間はGoogle Maps API設定後に自動最適化されます")
+                    trip["rows"].append(
+                        {"name": stop.name, "address": stop.address, "eta": "-", "distance": "-", "duration": "-"}
+                    )
+                trip["note"] = "訪問順・移動時間はGoogle Maps API設定後に自動最適化されます"
+                trips_data.append(trip)
                 continue
 
             result = optimize_trip(gmaps, base_address, trip_stops, departure)
             if not result:
-                print("ルート計算に失敗しました")
+                trip["note"] = "ルート計算に失敗しました"
+                trips_data.append(trip)
                 continue
             ordered_stops, legs = result
 
             current_time = departure
-            print(f"{current_time.strftime('%H:%M')} 出発: bonnepuppey天満店")
             for stop, leg in zip(ordered_stops, legs[:-1]):
                 current_time += datetime.timedelta(seconds=leg["duration"]["value"])
-                print(
-                    f"  -> {current_time.strftime('%H:%M')} {stop.name} 様宅 "
-                    f"({stop.address}) [移動 {leg['distance']['text']} / {leg['duration']['text']}]"
+                trip["rows"].append(
+                    {
+                        "name": stop.name,
+                        "address": stop.address,
+                        "eta": current_time.strftime("%H:%M"),
+                        "distance": leg["distance"]["text"],
+                        "duration": leg["duration"]["text"],
+                    }
                 )
             return_leg = legs[-1]
             current_time += datetime.timedelta(seconds=return_leg["duration"]["value"])
-            print(
-                f"  -> {current_time.strftime('%H:%M')} bonnepuppey天満店 帰着 "
-                f"[移動 {return_leg['distance']['text']} / {return_leg['duration']['text']}]"
+            trip["return_time"] = current_time.strftime("%H:%M")
+            trip["return_distance"] = return_leg["distance"]["text"]
+            trip["return_duration"] = return_leg["duration"]["text"]
+            trips_data.append(trip)
+
+    return base_address, capacity, trips_data
+
+
+def render_html(target_date, base_address, capacity, trips_data):
+    parts = []
+    parts.append("<!DOCTYPE html><html lang='ja'><head><meta charset='utf-8'>")
+    parts.append(f"<title>送迎ルート {target_date.isoformat()}</title>")
+    parts.append(
+        "<style>"
+        "body{font-family:sans-serif;margin:20px;}"
+        "h1{font-size:1.4em;} h2{margin-top:2em;border-bottom:2px solid #888;padding-bottom:4px;}"
+        "table{border-collapse:collapse;width:100%;margin-top:8px;}"
+        "th,td{border:1px solid #ccc;padding:8px;text-align:left;}"
+        "th{background:#f0f0f0;}"
+        ".note{color:#a00;margin-top:6px;}"
+        ".meta{color:#555;}"
+        "</style></head><body>"
+    )
+    parts.append(f"<h1>送迎ルート {target_date.isoformat()}</h1>")
+    parts.append(f"<p class='meta'>拠点: {base_address}<br>クレート数(1便あたり最大): {capacity}</p>")
+
+    for trip in trips_data:
+        if trip["rows"] is None:
+            parts.append(f"<h2>{trip['label']}</h2><p>対象なし</p>")
+            continue
+
+        parts.append(f"<h2>{trip['label']} 第{trip['trip_no']}便 (積載 {trip['loaded']}/{capacity})</h2>")
+        parts.append("<table><tr><th>順番</th><th>名前</th><th>住所</th><th>到着予定</th><th>移動距離</th><th>移動時間</th></tr>")
+        parts.append(
+            f"<tr><td>出発</td><td colspan='2'>{base_address}</td>"
+            f"<td>{trip['departure']}</td><td>-</td><td>-</td></tr>"
+        )
+        for i, row in enumerate(trip["rows"], start=1):
+            parts.append(
+                f"<tr><td>{i}</td><td>{row['name']}</td><td>{row['address']}</td>"
+                f"<td>{row['eta']}</td><td>{row['distance']}</td><td>{row['duration']}</td></tr>"
             )
+        if trip["return_time"]:
+            parts.append(
+                f"<tr><td>帰着</td><td colspan='2'>{base_address}</td>"
+                f"<td>{trip['return_time']}</td><td>{trip['return_distance']}</td><td>{trip['return_duration']}</td></tr>"
+            )
+        parts.append("</table>")
+        if trip["note"]:
+            parts.append(f"<p class='note'>※ {trip['note']}</p>")
+
+    parts.append("</body></html>")
+    return "".join(parts)
 
 
 if __name__ == "__main__":
