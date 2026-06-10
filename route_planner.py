@@ -8,7 +8,8 @@ Google カレンダーの予定から「🚗」マーク付きの園児を抽出
 カレンダー記法:
   タイトル: 🚗 犬の名前 [タグ]
     タグ省略時 = 往復
-    [往復] / [迎えのみ] / [送りのみ] / [迎えのみ 9:00] のように時刻を併記可
+    [往復] / [迎えのみ] / [送りのみ] / [朝のみ] / [夕のみ] /
+    [朝のみ 9:00] のように時刻を併記可
   場所(location)欄: 自宅住所
 """
 
@@ -131,6 +132,7 @@ def sample_events(target_date):
         {"summary": "🚗 タロウ [迎えのみ 8:50 中]", "location": "大阪府大阪市北区西天満2-2-2", "start": {"dateTime": dt(8, 50)}},
         {"summary": "🚗 ハナ [往復 小]", "location": "大阪府大阪市北区中崎西3-3-3", "start": {"dateTime": dt(9, 0)}},
         {"summary": "🚗 モモ [送りのみ 17:30 大]", "location": "大阪府大阪市北区天神橋4-4-4", "start": {"dateTime": dt(17, 30)}},
+        {"summary": "🚗 中前大地 [朝のみ 8:00 大]", "location": "大阪府大阪市北区錦町6-6-6", "start": {"dateTime": dt(8, 0)}},
         {"summary": "トリミング 来店 (送迎なし)", "location": "大阪府大阪市北区南森町5-5-5", "start": {"dateTime": dt(10, 0)}},
     ]
 
@@ -206,8 +208,8 @@ def parse_event(event, target_date):
 
 def classify_stop(name, tag_text, location, event_time):
     """(pickup_stop_or_None, dropoff_stop_or_None) を返す"""
-    has_pickup_tag = "迎え" in tag_text
-    has_dropoff_tag = "送り" in tag_text
+    has_pickup_tag = "迎え" in tag_text or "朝" in tag_text
+    has_dropoff_tag = "送り" in tag_text or "夕" in tag_text
     is_roundtrip = "往復" in tag_text or (not has_pickup_tag and not has_dropoff_tag)
 
     tag_time_match = TIME_PATTERN.search(tag_text)
