@@ -37,7 +37,17 @@ avg_speed_kmh: 20
 route_distance_factor: 1.3
 
 # 1軒あたり、お子さんの乗せ降ろしにかかる時間の目安 (分)
-stop_minutes: 3
+stop_minutes: 5
+
+# 店舗とお宅の間で、実際にかかる時間がわかっている場合はここで上書きできます
+# (住所はカレンダーの「場所」欄と完全に同じ文字列で指定してください)
+# from_store: 店舗からそのお宅までの時間(分)
+# to_store: そのお宅から店舗までの時間(分)
+# どちらか片方だけ指定してもOKです
+travel_time_overrides:
+  "〒532-0013大阪府大阪市淀川区木川西2丁目1-4-5 ラ・メゾン・ポナール":
+    from_store: 15
+    to_store: 5
 
 # Google カレンダー側の設定
 calendar_id: "primary"

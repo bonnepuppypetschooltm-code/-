@@ -116,14 +116,19 @@ def haversine_km(p1, p2):
     return 2 * r * math.asin(math.sqrt(a))
 
 
-def estimate_leg_minutes(base_coords, stops, avg_speed_kmh, route_distance_factor=1.0):
+def estimate_leg_minutes(base_coords, stops, avg_speed_kmh, route_distance_factor=1.0, travel_time_overrides=None):
     """拠点 -> 各お宅 -> 拠点 を1区間ずつ移動した場合の所要時間(分)のリストを返す。
     結果は (len(stops) + 1) 件で、先頭が「拠点 -> 最初のお宅」、
     末尾が「最後のお宅 -> 拠点」。座標が取得できない区間は None になる。
 
     実際の道路距離は直線距離より長くなるため、route_distance_factor を
     かけて補正する(例: 1.3 なら直線距離の1.3倍を走行距離とみなす)。
+
+    travel_time_overrides は { 住所: {"from_store": 分, "to_store": 分} }
+    の形式で、拠点との往復にかかる実際の時間がわかっている場合に
+    計算結果を上書きするための設定。
     """
+    travel_time_overrides = travel_time_overrides or {}
     points = [base_coords] + [s.coords for s in stops] + [base_coords]
     legs = []
     for i in range(len(points) - 1):
@@ -132,6 +137,15 @@ def estimate_leg_minutes(base_coords, stops, avg_speed_kmh, route_distance_facto
             legs.append(None)
         else:
             legs.append(km * route_distance_factor / avg_speed_kmh * 60)
+
+    if stops:
+        first_override = travel_time_overrides.get(stops[0].address, {})
+        if "from_store" in first_override:
+            legs[0] = first_override["from_store"]
+        last_override = travel_time_overrides.get(stops[-1].address, {})
+        if "to_store" in last_override:
+            legs[-1] = last_override["to_store"]
+
     return legs
 
 
@@ -487,6 +501,7 @@ def build_route(target_date, config, events, geocode_enabled=True):
                 trip_stops,
                 config.get("avg_speed_kmh", 20),
                 config.get("route_distance_factor", 1.3),
+                config.get("travel_time_overrides"),
             )
             trip_minutes = estimate_trip_minutes(leg_minutes, config.get("stop_minutes", 3))
             if trip_minutes is not None:
