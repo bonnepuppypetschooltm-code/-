@@ -209,8 +209,8 @@ def parse_event(event, target_date):
 
 def classify_stop(name, tag_text, location, event_time):
     """(pickup_stop_or_None, dropoff_stop_or_None) を返す"""
-    has_pickup_tag = "迎え" in tag_text or "朝" in tag_text
-    has_dropoff_tag = "送り" in tag_text or "夕" in tag_text
+    has_pickup_tag = bool(re.search(r"(迎え|朝)のみ", tag_text))
+    has_dropoff_tag = bool(re.search(r"(送り|夕)のみ", tag_text))
     is_roundtrip = "往復" in tag_text or (not has_pickup_tag and not has_dropoff_tag)
 
     tag_time_match = TIME_PATTERN.search(tag_text)
@@ -284,6 +284,15 @@ def build_maps_url(base_address, stop_addresses):
     if waypoints:
         url += f"&waypoints={waypoints}"
     return url
+
+
+def build_embed_url(base_address, stop_addresses):
+    """APIキー不要で画面に埋め込める Google マップの経路表示用URLを作る"""
+    points = [base_address] + stop_addresses + [base_address]
+    encoded = [urllib.parse.quote_plus(p) for p in points]
+    saddr = encoded[0]
+    daddr = "+to:".join(encoded[1:])
+    return f"https://maps.google.com/maps?saddr={saddr}&daddr={daddr}&output=embed"
 
 
 def main():
@@ -411,6 +420,7 @@ def build_route(target_date, config, events, geocode_enabled=True):
                 "departure": departure.strftime("%H:%M"),
                 "rows": [],
                 "maps_url": build_maps_url(base_address, [s.address for s in trip_stops]),
+                "embed_url": build_embed_url(base_address, [s.address for s in trip_stops]),
             }
             for stop in trip_stops:
                 t = stop.requested_time.strftime("%H:%M") if stop.requested_time else "-"
@@ -435,6 +445,7 @@ def render_html(target_date, base_address, trips_data):
         ".meta{color:#555;}"
         ".maps-link{display:inline-block;margin-top:8px;padding:6px 12px;"
         "background:#1a73e8;color:#fff;text-decoration:none;border-radius:4px;}"
+        ".map-embed{width:100%;height:400px;border:0;margin-top:8px;}"
         "</style></head><body>"
     )
     parts.append(f"<h1>送迎ルート {target_date.isoformat()}</h1>")
@@ -460,6 +471,7 @@ def render_html(target_date, base_address, trips_data):
         parts.append(f"<tr><td>帰着</td><td colspan='4'>{base_address}</td></tr>")
         parts.append("</table>")
         parts.append(f"<a class='maps-link' href='{trip['maps_url']}' target='_blank'>Googleマップでルートを開く</a>")
+        parts.append(f"<iframe class='map-embed' src='{trip['embed_url']}' loading='lazy'></iframe>")
 
     parts.append("</body></html>")
     return "".join(parts)
