@@ -76,12 +76,18 @@ def save_geocode_cache(cache):
         json.dump(cache, f, ensure_ascii=False, indent=2)
 
 
+POSTAL_CODE_PATTERN = re.compile(r"^〒?\d{3}-?\d{4}\s*")
+
+
 def geocode(address, cache):
     """住所から (緯度, 経度) を取得する (国土地理院 住所検索API、無料・APIキー不要)"""
     if address in cache:
         return cache[address]
+    # 「〒532-0013大阪府...」のような郵便番号付きの住所は
+    # 検索APIがうまく認識できないことがあるため、郵便番号部分を除いて検索する
+    query = POSTAL_CODE_PATTERN.sub("", address).strip()
     try:
-        url = GEOCODE_URL + urllib.parse.quote(address)
+        url = GEOCODE_URL + urllib.parse.quote(query)
         with urllib.request.urlopen(url, timeout=5) as resp:
             data = json.load(resp)
         if data:
@@ -122,6 +128,18 @@ def estimate_trip_minutes(base_coords, stops, avg_speed_kmh, stop_minutes):
     )
     drive_minutes = total_km / avg_speed_kmh * 60
     return drive_minutes + len(stops) * stop_minutes
+
+
+def estimate_leg_minutes(base_coords, stops, avg_speed_kmh):
+    """各お宅から次の目的地(次のお宅、または最後は店舗)までの移動時間(分)のリストを返す。
+    座標が取得できない場合、その区間は None になる。
+    """
+    destinations = [s.coords for s in stops[1:]] + [base_coords]
+    legs = []
+    for stop, dest_coords in zip(stops, destinations):
+        km = haversine_km(stop.coords, dest_coords)
+        legs.append(km / avg_speed_kmh * 60 if km is not None else None)
+    return legs
 
 
 DEFAULT_CONFIG = {
@@ -212,8 +230,9 @@ def parse_event(event, target_date):
         return None
 
     after_mark = title.split(CAR_MARK, 1)[1].strip()
-    tag_match = TAG_PATTERN.search(after_mark)
-    tag_text = tag_match.group(1) if tag_match else ""
+    # 「[往復 朝8:00] [大]」のように複数の[]に分けて書いた場合も
+    # まとめて1つのタグとして扱う
+    tag_text = " ".join(m.group(1) for m in TAG_PATTERN.finditer(after_mark))
     name = TAG_PATTERN.sub("", after_mark).strip()
     if not name:
         name = "(名前未設定)"
@@ -479,10 +498,21 @@ def build_route(target_date, config, events, geocode_enabled=True):
                 "maps_url": build_maps_url(base_address, [s.address for s in trip_stops]),
                 "embed_url": build_embed_url(base_address, [s.address for s in trip_stops]),
             }
-            for stop in trip_stops:
+            leg_minutes = estimate_leg_minutes(
+                base_coords, trip_stops, config.get("avg_speed_kmh", 25)
+            )
+            for idx, stop in enumerate(trip_stops):
                 t = stop.requested_time.strftime("%H:%M") if stop.requested_time else "-"
                 size = stop.crate_size or f"{default_crate_size}(既定)"
-                trip["rows"].append({"name": stop.name, "address": stop.address, "time": t, "crate": size})
+                next_label = trip_stops[idx + 1].name if idx + 1 < len(trip_stops) else "店舗"
+                minutes = leg_minutes[idx]
+                if minutes is not None:
+                    next_text = f"{next_label}まで約{round(minutes)}分"
+                else:
+                    next_text = "-"
+                trip["rows"].append(
+                    {"name": stop.name, "address": stop.address, "time": t, "crate": size, "next": next_text}
+                )
             trips_data.append(trip)
 
     return base_address, trips_data
@@ -533,14 +563,14 @@ def render_html(target_date, base_address, trips_data):
             parts.append(f"<p class='capacity-note'>あとまだ積めます: {remaining_text}</p>")
         else:
             parts.append("<p class='capacity-note'>満載です</p>")
-        parts.append("<table><tr><th>順番</th><th>名前</th><th>住所</th><th>希望時刻</th><th>クレート</th></tr>")
-        parts.append(f"<tr><td>出発</td><td colspan='2'>{base_address}</td><td>{trip['departure']}</td><td>-</td></tr>")
+        parts.append("<table><tr><th>順番</th><th>名前</th><th>住所</th><th>希望時刻</th><th>クレート</th><th>次まで</th></tr>")
+        parts.append(f"<tr><td>出発</td><td colspan='2'>{base_address}</td><td>{trip['departure']}</td><td>-</td><td>-</td></tr>")
         for i, row in enumerate(trip["rows"], start=1):
             parts.append(
                 f"<tr><td>{i}</td><td>{row['name']}</td><td>{row['address']}</td>"
-                f"<td>{row['time']}</td><td>{row['crate']}</td></tr>"
+                f"<td>{row['time']}</td><td>{row['crate']}</td><td>{row['next']}</td></tr>"
             )
-        parts.append(f"<tr><td>帰着</td><td colspan='2'>{base_address}</td><td>{trip['arrival']}</td><td>-</td></tr>")
+        parts.append(f"<tr><td>帰着</td><td colspan='2'>{base_address}</td><td>{trip['arrival']}</td><td>-</td><td>-</td></tr>")
         parts.append("</table>")
         parts.append(f"<a class='maps-link' href='{trip['maps_url']}' target='_blank'>Googleマップでルートを開く</a>")
         parts.append(f"<iframe class='map-embed' src='{trip['embed_url']}' loading='lazy'></iframe>")
