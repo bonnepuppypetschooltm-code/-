@@ -110,7 +110,7 @@ def haversine_km(p1, p2):
 
 DEFAULT_CONFIG = {
     "base_address": "大阪府大阪市北区天神橋4-6-17 上谷ビル1F.2F",
-    "crate_capacity": {"特大": 2, "大": 7, "中": 9, "小": 12},
+    "crate_capacity": {"特大": 2, "大": 4, "中": 9, "小": 12},
     "default_crate_size": "中",
     "morning_start_time": "08:30",
     "evening_start_time": "17:00",
@@ -134,6 +134,7 @@ def sample_events(target_date):
         {"summary": "🚗 ハナ [往復 小]", "location": "大阪府大阪市北区中崎西3-3-3", "start": {"dateTime": dt(9, 0)}},
         {"summary": "🚗 モモ [送りのみ 17:30 大]", "location": "大阪府大阪市北区天神橋4-4-4", "start": {"dateTime": dt(17, 30)}},
         {"summary": "🚗 中前大地 [朝のみ 8:00 大]", "location": "大阪府大阪市北区錦町6-6-6", "start": {"dateTime": dt(8, 0)}},
+        {"summary": "🚗 ロイ [往復 8:10 17:45 大]", "location": "大阪府大阪市北区中之島7-7-7", "start": {"dateTime": dt(8, 10)}},
         {"summary": "トリミング 来店 (送迎なし)", "location": "大阪府大阪市北区南森町5-5-5", "start": {"dateTime": dt(10, 0)}},
     ]
 
@@ -213,10 +214,13 @@ def classify_stop(name, tag_text, location, event_time):
     has_dropoff_tag = bool(re.search(r"(送り|夕)のみ", tag_text))
     is_roundtrip = "往復" in tag_text or (not has_pickup_tag and not has_dropoff_tag)
 
-    tag_time_match = TIME_PATTERN.search(tag_text)
-    tag_time = None
-    if tag_time_match:
-        tag_time = datetime.time(int(tag_time_match.group(1)), int(tag_time_match.group(2)))
+    tag_times = [datetime.time(int(h), int(m)) for h, m in TIME_PATTERN.findall(tag_text)]
+    if len(tag_times) >= 2:
+        pickup_time, dropoff_time = tag_times[0], tag_times[1]
+    elif len(tag_times) == 1:
+        pickup_time = dropoff_time = tag_times[0]
+    else:
+        pickup_time = dropoff_time = None
 
     crate_size = None
     for size in CRATE_SIZE_ORDER:
@@ -228,10 +232,10 @@ def classify_stop(name, tag_text, location, event_time):
     dropoff_stop = None
 
     if is_roundtrip or has_pickup_tag:
-        t = tag_time if has_pickup_tag else event_time
+        t = pickup_time if pickup_time else event_time
         pickup_stop = Stop(name, location, t, crate_size)
     if is_roundtrip or has_dropoff_tag:
-        t = tag_time if has_dropoff_tag else event_time
+        t = dropoff_time if dropoff_time else event_time
         dropoff_stop = Stop(name, location, t, crate_size)
 
     return pickup_stop, dropoff_stop
