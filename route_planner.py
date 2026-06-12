@@ -29,7 +29,7 @@ CALENDAR_SCOPES = ["https://www.googleapis.com/auth/calendar.readonly"]
 
 CAR_MARK = "🚗"
 TAG_PATTERN = re.compile(r"[\[(]([^\])]*)[\])]")
-TIME_PATTERN = re.compile(r"(\d{1,2}):(\d{2})")
+TIME_PATTERN = re.compile(r"(朝|夕)?(\d{1,2}):(\d{2})")
 
 # 「特大」は「大」の部分文字列を含むため、長い名前から先に判定する
 CRATE_SIZE_ORDER = ["特大", "大", "中", "小"]
@@ -135,6 +135,7 @@ def sample_events(target_date):
         {"summary": "🚗 モモ [送りのみ 17:30 大]", "location": "大阪府大阪市北区天神橋4-4-4", "start": {"dateTime": dt(17, 30)}},
         {"summary": "🚗 中前大地 [朝のみ 8:00 大]", "location": "大阪府大阪市北区錦町6-6-6", "start": {"dateTime": dt(8, 0)}},
         {"summary": "🚗 ロイ [往復 8:10 17:45 大]", "location": "大阪府大阪市北区中之島7-7-7", "start": {"dateTime": dt(8, 10)}},
+        {"summary": "🚗 桐野ロイ [往復 朝8:00 大]", "location": "大阪府大阪市淀川区木川西2丁目1-4-5 ラ・メゾン・ポナール", "start": {"dateTime": dt(8, 0)}},
         {"summary": "トリミング 来店 (送迎なし)", "location": "大阪府大阪市北区南森町5-5-5", "start": {"dateTime": dt(10, 0)}},
     ]
 
@@ -214,13 +215,30 @@ def classify_stop(name, tag_text, location, event_time):
     has_dropoff_tag = bool(re.search(r"(送り|夕)のみ", tag_text))
     is_roundtrip = "往復" in tag_text or (not has_pickup_tag and not has_dropoff_tag)
 
-    tag_times = [datetime.time(int(h), int(m)) for h, m in TIME_PATTERN.findall(tag_text)]
-    if len(tag_times) >= 2:
-        pickup_time, dropoff_time = tag_times[0], tag_times[1]
-    elif len(tag_times) == 1:
-        pickup_time = dropoff_time = tag_times[0]
-    else:
-        pickup_time = dropoff_time = None
+    pickup_time = None
+    dropoff_time = None
+    unlabeled_times = []
+    for prefix, h, m in TIME_PATTERN.findall(tag_text):
+        t = datetime.time(int(h), int(m))
+        if prefix == "朝":
+            pickup_time = t
+        elif prefix == "夕":
+            dropoff_time = t
+        else:
+            unlabeled_times.append(t)
+
+    if len(unlabeled_times) >= 2:
+        if pickup_time is None:
+            pickup_time = unlabeled_times[0]
+        if dropoff_time is None:
+            dropoff_time = unlabeled_times[1]
+    elif len(unlabeled_times) == 1:
+        if pickup_time is None and dropoff_time is None:
+            pickup_time = dropoff_time = unlabeled_times[0]
+        elif pickup_time is None:
+            pickup_time = unlabeled_times[0]
+        elif dropoff_time is None:
+            dropoff_time = unlabeled_times[0]
 
     crate_size = None
     for size in CRATE_SIZE_ORDER:
