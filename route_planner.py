@@ -78,16 +78,18 @@ def save_geocode_cache(cache):
         json.dump(cache, f, ensure_ascii=False, indent=2)
 
 
-POSTAL_CODE_PATTERN = re.compile(r"^〒?\d{3}-?\d{4}\s*")
+POSTAL_CODE_PATTERN = re.compile(r"〒?\d{3}-?\d{4}\s*")
 
 
 def geocode(address, cache):
     """住所から (緯度, 経度) を取得する (国土地理院 住所検索API、無料・APIキー不要)"""
     if address in cache and cache[address] is not None:
         return cache[address]
-    # 「〒532-0013大阪府...」のような郵便番号付きの住所は
-    # 検索APIがうまく認識できないことがあるため、郵便番号部分を除いて検索する
-    query = POSTAL_CODE_PATTERN.sub("", address).strip()
+    # 「Mebius西天満Bldg.、日本、〒530-0047大阪府...」のように、
+    # 郵便番号より前にビル名などが付いている住所は検索APIがうまく認識できないため、
+    # 郵便番号より前の部分は取り除き、郵便番号より後ろの部分だけで検索する
+    m = POSTAL_CODE_PATTERN.search(address)
+    query = address[m.end():].strip() if m else address.strip()
     try:
         url = GEOCODE_URL + urllib.parse.quote(query)
         with urllib.request.urlopen(url, timeout=5) as resp:
@@ -188,6 +190,7 @@ DEFAULT_CONFIG = {
     "avg_speed_kmh": 20,
     "route_distance_factor": 1.3,
     "stop_minutes": 5,
+    "time_gap_split_minutes": 60,
 }
 
 
@@ -384,11 +387,15 @@ def classify_stop(name, tag_text, location, event_time):
     return pickup_stop, dropoff_stop
 
 
-def split_into_trips(stops, capacity_units, crate_weights, default_crate_size):
+def split_into_trips(stops, capacity_units, crate_weights, default_crate_size, time_gap_split_minutes=None):
     """クレートサイズごとの占有units数をもとに、車に収まる範囲でトリップに分割する。
 
     時刻指定があるお宅はその時刻順を優先する。時刻指定がないお宅は、
     店舗から遠い順 (遠方を先に回り、店舗近くで締めくくる) に並べる。
+
+    時刻指定のあるお宅同士の希望時刻が time_gap_split_minutes 以上離れている場合は、
+    その間で一旦店舗に戻ることにして便を分割する
+    (待ち時間が長くなりすぎるのを避けるため)。
     """
     def sort_key(s):
         if s.requested_time:
@@ -400,18 +407,35 @@ def split_into_trips(stops, capacity_units, crate_weights, default_crate_size):
     trips = []
     current = []
     current_units = 0
+    last_requested_time = None
     for stop in sorted_stops:
         size = stop.crate_size or default_crate_size
         units = crate_weights.get(size, crate_weights[default_crate_size])
-        if current and current_units + units > capacity_units:
+        split_for_capacity = current and current_units + units > capacity_units
+        split_for_time_gap = (
+            time_gap_split_minutes is not None
+            and current
+            and last_requested_time is not None
+            and stop.requested_time is not None
+            and minutes_between(last_requested_time, stop.requested_time) >= time_gap_split_minutes
+        )
+        if split_for_capacity or split_for_time_gap:
             trips.append(current)
             current = []
             current_units = 0
+            last_requested_time = None
         current.append(stop)
         current_units += units
+        if stop.requested_time is not None:
+            last_requested_time = stop.requested_time
     if current:
         trips.append(current)
     return trips
+
+
+def minutes_between(time1, time2):
+    """datetime.time同士の差(分)を返す (time2 - time1)"""
+    return (time2.hour * 60 + time2.minute) - (time1.hour * 60 + time1.minute)
 
 
 def build_maps_url(base_address, stop_addresses):
@@ -572,7 +596,10 @@ def build_route(target_date, config, events, geocode_enabled=True):
             trips_data.append({"label": label, "rows": None})
             continue
 
-        trips = split_into_trips(stops, capacity_units, crate_weights, default_crate_size)
+        trips = split_into_trips(
+            stops, capacity_units, crate_weights, default_crate_size,
+            config.get("time_gap_split_minutes", 60),
+        )
         for i, trip_stops in enumerate(trips, start=1):
             size_counts = {}
             loaded_units = 0
