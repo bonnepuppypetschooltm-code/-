@@ -117,7 +117,7 @@ def haversine_km(p1, p2):
     return 2 * r * math.asin(math.sqrt(a))
 
 
-def estimate_leg_minutes(base_coords, stops, avg_speed_kmh, route_distance_factor=1.0, travel_time_overrides=None):
+def estimate_leg_minutes(base_coords, stops, avg_speed_kmh, route_distance_factor=1.0, travel_time_overrides=None, stop_minutes=0):
     """拠点 -> 各お宅 -> 拠点 を1区間ずつ移動した場合の所要時間(分)のリストを返す。
     結果は (len(stops) + 1) 件で、先頭が「拠点 -> 最初のお宅」、
     末尾が「最後のお宅 -> 拠点」。座標が取得できない区間は None になる。
@@ -127,7 +127,10 @@ def estimate_leg_minutes(base_coords, stops, avg_speed_kmh, route_distance_facto
 
     travel_time_overrides は { 住所: {"from_store": 分, "to_store": 分} }
     の形式で、拠点との往復にかかる実際の時間がわかっている場合に
-    計算結果を上書きするための設定。
+    計算結果を上書きするための設定(値は純粋な移動時間)。
+
+    stop_minutes は1軒あたりの乗せ降ろし時間。最初の区間(拠点 -> 最初のお宅)
+    以外の各区間には、出発前の乗せ降ろし時間としてこの分数を加算する。
     """
     travel_time_overrides = travel_time_overrides or {}
     # 全角/半角や前後の空白の違いで一致しないことがあるため、正規化してから比較する
@@ -152,6 +155,10 @@ def estimate_leg_minutes(base_coords, stops, avg_speed_kmh, route_distance_facto
         if "to_store" in last_override:
             legs[-1] = last_override["to_store"]
 
+    for i in range(1, len(legs)):
+        if legs[i] is not None:
+            legs[i] += stop_minutes
+
     return legs
 
 
@@ -161,14 +168,14 @@ def normalize_address(address):
     return re.sub(r"\s+", "", normalized)
 
 
-def estimate_trip_minutes(leg_minutes, stop_minutes):
-    """leg_minutes(estimate_leg_minutesの結果)から、拠点に戻ってくるまでの
-    所要時間(目安、分)を概算する。区間が1つでも不明なら None を返す。
+def estimate_trip_minutes(leg_minutes):
+    """leg_minutes(estimate_leg_minutesの結果、乗せ降ろし時間込み)から、
+    拠点に戻ってくるまでの所要時間(目安、分)を概算する。
+    区間が1つでも不明なら None を返す。
     """
     if any(m is None for m in leg_minutes):
         return None
-    num_stops = len(leg_minutes) - 1
-    return sum(leg_minutes) + num_stops * stop_minutes
+    return sum(leg_minutes)
 
 
 DEFAULT_CONFIG = {
@@ -592,8 +599,9 @@ def build_route(target_date, config, events, geocode_enabled=True):
                 config.get("avg_speed_kmh", 20),
                 config.get("route_distance_factor", 1.3),
                 config.get("travel_time_overrides"),
+                config.get("stop_minutes", 5),
             )
-            trip_minutes = estimate_trip_minutes(leg_minutes, config.get("stop_minutes", 5))
+            trip_minutes = estimate_trip_minutes(leg_minutes)
             if trip_minutes is not None:
                 arrival = departure + datetime.timedelta(minutes=trip_minutes)
                 arrival_text = arrival.strftime("%H:%M") + " 頃 (目安)"
