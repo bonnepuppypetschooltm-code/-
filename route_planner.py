@@ -189,6 +189,56 @@ def load_config(path):
         return yaml.safe_load(f)
 
 
+def set_travel_time_override(config_path, config, events, target_date, name, from_store, to_store):
+    """指定した名前の子のカレンダーの「場所」欄から住所を取得し、
+    config.yaml の travel_time_overrides に所要時間を保存する。
+    """
+    if from_store is None and to_store is None:
+        print("--from-store または --to-store のどちらかを指定してください。", file=sys.stderr)
+        return
+
+    address = None
+    for event in events:
+        title = event.get("summary", "")
+        if CAR_MARK in title and name in title:
+            address = event.get("location", "").strip()
+            break
+
+    if address is None:
+        print(
+            f"{target_date.isoformat()} のカレンダーに「{name}」を含む🚗予定が見つかりませんでした。",
+            file=sys.stderr,
+        )
+        return
+
+    overrides = config.get("travel_time_overrides") or {}
+    # 既存の登録(全角/半角や空白の違いを含む)があれば上書きする
+    normalized = normalize_address(address)
+    for existing_addr in list(overrides):
+        if normalize_address(existing_addr) == normalized:
+            del overrides[existing_addr]
+
+    entry = overrides.get(address, {})
+    if from_store is not None:
+        entry["from_store"] = from_store
+    if to_store is not None:
+        entry["to_store"] = to_store
+    overrides[address] = entry
+
+    # 既存の travel_time_overrides セクション(末尾にあるはず)を取り除き、
+    # 残りの内容(コメント等)はそのまま保持して、新しい内容を末尾に追加する
+    with open(config_path, encoding="utf-8") as f:
+        text = f.read()
+    text = re.split(r"^travel_time_overrides:", text, maxsplit=1, flags=re.MULTILINE)[0]
+    text = text.rstrip() + "\n\n"
+    text += yaml.dump({"travel_time_overrides": overrides}, allow_unicode=True, default_flow_style=False, sort_keys=False)
+
+    with open(config_path, "w", encoding="utf-8") as f:
+        f.write(text)
+
+    print(f"「{name}」({address}) の所要時間を保存しました: {entry}")
+
+
 def sample_events(target_date):
     """--demo 用のサンプル予定 (Google Calendar API のレスポンス形式を模したもの)"""
     def dt(hour, minute):
@@ -408,11 +458,39 @@ def main():
         action="store_true",
         help="作成後にブラウザで自動的に開かない",
     )
+    parser.add_argument(
+        "--set-travel-time",
+        metavar="名前",
+        default=None,
+        help="指定した名前の子について、店舗との所要時間をconfig.yamlに保存する"
+        "(--from-store / --to-store とあわせて指定。--date の日のカレンダーから住所を自動取得)",
+    )
+    parser.add_argument(
+        "--from-store",
+        type=int,
+        default=None,
+        help="店舗 → そのお宅 までの所要時間(分) (--set-travel-time と併用)",
+    )
+    parser.add_argument(
+        "--to-store",
+        type=int,
+        default=None,
+        help="そのお宅 → 店舗 までの所要時間(分) (--set-travel-time と併用)",
+    )
     args = parser.parse_args()
 
     target_date = (
         datetime.date.fromisoformat(args.date) if args.date else datetime.date.today()
     )
+
+    if args.set_travel_time:
+        config = load_config(args.config)
+        service = get_calendar_service(config)
+        events = fetch_events(service, config["calendar_id"], target_date)
+        set_travel_time_override(
+            args.config, config, events, target_date, args.set_travel_time, args.from_store, args.to_store
+        )
+        return
 
     if args.demo:
         config = DEFAULT_CONFIG
