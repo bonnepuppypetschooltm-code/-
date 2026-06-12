@@ -82,7 +82,7 @@ POSTAL_CODE_PATTERN = re.compile(r"^〒?\d{3}-?\d{4}\s*")
 
 def geocode(address, cache):
     """住所から (緯度, 経度) を取得する (国土地理院 住所検索API、無料・APIキー不要)"""
-    if address in cache:
+    if address in cache and cache[address] is not None:
         return cache[address]
     # 「〒532-0013大阪府...」のような郵便番号付きの住所は
     # 検索APIがうまく認識できないことがあるため、郵便番号部分を除いて検索する
