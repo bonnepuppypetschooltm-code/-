@@ -26,6 +26,13 @@ evening_start_time: "17:00"
 # 時刻指定のあるお宅に間に合うよう、何分前に店舗を出発するか
 departure_buffer_minutes: 15
 
+# 「帰着予定」の計算に使う平均時速 (km/h)
+# 出発時刻からの所要時間の目安を計算するために使います
+avg_speed_kmh: 25
+
+# 1軒あたり、お子さんの乗せ降ろしにかかる時間の目安 (分)
+stop_minutes: 3
+
 # Google カレンダー側の設定
 calendar_id: "primary"
 

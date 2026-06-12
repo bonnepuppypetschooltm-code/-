@@ -45,6 +45,7 @@ class Stop:
         self.requested_time = requested_time
         self.crate_size = crate_size
         self.distance_from_base = None
+        self.coords = None
 
     def __repr__(self):
         t = self.requested_time.strftime("%H:%M") if self.requested_time else "-"
@@ -108,6 +109,21 @@ def haversine_km(p1, p2):
     return 2 * r * math.asin(math.sqrt(a))
 
 
+def estimate_trip_minutes(base_coords, stops, avg_speed_kmh, stop_minutes):
+    """拠点 -> 各お宅 -> 拠点 の所要時間(目安、分)を概算する。
+    座標が取得できない場合は None を返す。
+    """
+    points = [base_coords] + [s.coords for s in stops] + [base_coords]
+    if any(p is None for p in points):
+        return None
+
+    total_km = sum(
+        haversine_km(points[i], points[i + 1]) for i in range(len(points) - 1)
+    )
+    drive_minutes = total_km / avg_speed_kmh * 60
+    return drive_minutes + len(stops) * stop_minutes
+
+
 DEFAULT_CONFIG = {
     "base_address": "大阪府大阪市北区天神橋4-6-17 上谷ビル1F.2F",
     "crate_capacity": {"特大": 2, "大": 4, "中": 9, "小": 12},
@@ -115,6 +131,8 @@ DEFAULT_CONFIG = {
     "morning_start_time": "08:30",
     "evening_start_time": "17:00",
     "departure_buffer_minutes": 15,
+    "avg_speed_kmh": 25,
+    "stop_minutes": 3,
 }
 
 
@@ -394,11 +412,13 @@ def build_route(target_date, config, events, geocode_enabled=True):
     default_crate_size = config["default_crate_size"]
     capacity_units, crate_weights = crate_units(crate_capacity)
 
+    base_coords = None
     if geocode_enabled:
         cache = load_geocode_cache()
         base_coords = geocode(base_address, cache)
         for stop in pickup_stops + dropoff_stops:
-            stop.distance_from_base = haversine_km(base_coords, geocode(stop.address, cache))
+            stop.coords = geocode(stop.address, cache)
+            stop.distance_from_base = haversine_km(base_coords, stop.coords)
         save_geocode_cache(cache)
 
     default_morning_start = datetime.datetime.combine(
@@ -439,12 +459,22 @@ def build_route(target_date, config, events, geocode_enabled=True):
                 size: remaining_units // weight for size, weight in crate_weights.items()
             }
 
+            trip_minutes = estimate_trip_minutes(
+                base_coords, trip_stops, config.get("avg_speed_kmh", 25), config.get("stop_minutes", 3)
+            )
+            if trip_minutes is not None:
+                arrival = departure + datetime.timedelta(minutes=trip_minutes)
+                arrival_text = arrival.strftime("%H:%M") + " 頃 (目安)"
+            else:
+                arrival_text = "-"
+
             trip = {
                 "label": label,
                 "trip_no": i,
                 "size_counts": size_counts,
                 "remaining_counts": remaining_counts,
                 "departure": departure.strftime("%H:%M"),
+                "arrival": arrival_text,
                 "rows": [],
                 "maps_url": build_maps_url(base_address, [s.address for s in trip_stops]),
                 "embed_url": build_embed_url(base_address, [s.address for s in trip_stops]),
@@ -497,6 +527,7 @@ def render_html(target_date, base_address, trips_data):
         )
         parts.append(f"<h2>{trip['label']} 第{trip['trip_no']}便</h2>")
         parts.append(f"<p class='departure'>出発時刻: {trip['departure']}</p>")
+        parts.append(f"<p class='departure'>帰着予定: {trip['arrival']}</p>")
         parts.append(f"<p class='capacity-note'>積載: {size_text}</p>")
         if remaining_text:
             parts.append(f"<p class='capacity-note'>あとまだ積めます: {remaining_text}</p>")
@@ -509,7 +540,7 @@ def render_html(target_date, base_address, trips_data):
                 f"<tr><td>{i}</td><td>{row['name']}</td><td>{row['address']}</td>"
                 f"<td>{row['time']}</td><td>{row['crate']}</td></tr>"
             )
-        parts.append(f"<tr><td>帰着</td><td colspan='4'>{base_address}</td></tr>")
+        parts.append(f"<tr><td>帰着</td><td colspan='2'>{base_address}</td><td>{trip['arrival']}</td><td>-</td></tr>")
         parts.append("</table>")
         parts.append(f"<a class='maps-link' href='{trip['maps_url']}' target='_blank'>Googleマップでルートを開く</a>")
         parts.append(f"<iframe class='map-embed' src='{trip['embed_url']}' loading='lazy'></iframe>")
