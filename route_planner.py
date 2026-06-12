@@ -28,8 +28,9 @@ import yaml
 CALENDAR_SCOPES = ["https://www.googleapis.com/auth/calendar.readonly"]
 
 CAR_MARK = "🚗"
-TAG_PATTERN = re.compile(r"[\[(]([^\])]*)[\])]")
-TIME_PATTERN = re.compile(r"(朝|夕)?(\d{1,2}):(\d{2})")
+# 半角 [] () と 全角 ［］（） の両方に対応
+TAG_PATTERN = re.compile(r"[\[(［（]([^\])］）]*)[\])］）]")
+TIME_PATTERN = re.compile(r"(朝|夕)?(\d{1,2})[:：](\d{2})")
 
 # 「特大」は「大」の部分文字列を含むため、長い名前から先に判定する
 CRATE_SIZE_ORDER = ["特大", "大", "中", "小"]
