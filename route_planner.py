@@ -180,7 +180,7 @@ DEFAULT_CONFIG = {
     "departure_buffer_minutes": 15,
     "avg_speed_kmh": 20,
     "route_distance_factor": 1.3,
-    "stop_minutes": 3,
+    "stop_minutes": 5,
 }
 
 
@@ -593,7 +593,7 @@ def build_route(target_date, config, events, geocode_enabled=True):
                 config.get("route_distance_factor", 1.3),
                 config.get("travel_time_overrides"),
             )
-            trip_minutes = estimate_trip_minutes(leg_minutes, config.get("stop_minutes", 3))
+            trip_minutes = estimate_trip_minutes(leg_minutes, config.get("stop_minutes", 5))
             if trip_minutes is not None:
                 arrival = departure + datetime.timedelta(minutes=trip_minutes)
                 arrival_text = arrival.strftime("%H:%M") + " 頃 (目安)"
