@@ -20,6 +20,7 @@ import math
 import os
 import re
 import sys
+import unicodedata
 import urllib.parse
 import urllib.request
 
@@ -129,6 +130,11 @@ def estimate_leg_minutes(base_coords, stops, avg_speed_kmh, route_distance_facto
     計算結果を上書きするための設定。
     """
     travel_time_overrides = travel_time_overrides or {}
+    # 全角/半角や前後の空白の違いで一致しないことがあるため、正規化してから比較する
+    normalized_overrides = {
+        normalize_address(addr): override for addr, override in travel_time_overrides.items()
+    }
+
     points = [base_coords] + [s.coords for s in stops] + [base_coords]
     legs = []
     for i in range(len(points) - 1):
@@ -139,14 +145,19 @@ def estimate_leg_minutes(base_coords, stops, avg_speed_kmh, route_distance_facto
             legs.append(km * route_distance_factor / avg_speed_kmh * 60)
 
     if stops:
-        first_override = travel_time_overrides.get(stops[0].address, {})
+        first_override = normalized_overrides.get(normalize_address(stops[0].address), {})
         if "from_store" in first_override:
             legs[0] = first_override["from_store"]
-        last_override = travel_time_overrides.get(stops[-1].address, {})
+        last_override = normalized_overrides.get(normalize_address(stops[-1].address), {})
         if "to_store" in last_override:
             legs[-1] = last_override["to_store"]
 
     return legs
+
+
+def normalize_address(address):
+    """全角/半角や前後の空白の違いを無視して住所を比較するための正規化"""
+    return unicodedata.normalize("NFKC", address.strip())
 
 
 def estimate_trip_minutes(leg_minutes, stop_minutes):
