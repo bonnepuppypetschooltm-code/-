@@ -235,8 +235,9 @@ def classify_stop(name, tag_text, location, event_time):
         t = pickup_time if pickup_time else event_time
         pickup_stop = Stop(name, location, t, crate_size)
     if is_roundtrip or has_dropoff_tag:
-        t = dropoff_time if dropoff_time else event_time
-        dropoff_stop = Stop(name, location, t, crate_size)
+        # 往復で夕方の希望時刻が指定されていない場合、カレンダーの予定時刻(朝の時刻)を
+        # そのまま夕方の希望時刻として使わない (出発時刻の計算がおかしくなるため)
+        dropoff_stop = Stop(name, location, dropoff_time, crate_size)
 
     return pickup_stop, dropoff_stop
 
@@ -415,12 +416,16 @@ def build_route(target_date, config, events, geocode_enabled=True):
             else:
                 departure = default_start
 
+            remaining_units = capacity_units - loaded_units
+            remaining_counts = {
+                size: remaining_units // weight for size, weight in crate_weights.items()
+            }
+
             trip = {
                 "label": label,
                 "trip_no": i,
                 "size_counts": size_counts,
-                "loaded_units": loaded_units,
-                "capacity_units": capacity_units,
+                "remaining_counts": remaining_counts,
                 "departure": departure.strftime("%H:%M"),
                 "rows": [],
                 "maps_url": build_maps_url(base_address, [s.address for s in trip_stops]),
@@ -450,6 +455,8 @@ def render_html(target_date, base_address, trips_data):
         ".maps-link{display:inline-block;margin-top:8px;padding:6px 12px;"
         "background:#1a73e8;color:#fff;text-decoration:none;border-radius:4px;}"
         ".map-embed{width:100%;height:400px;border:0;margin-top:8px;}"
+        ".departure{font-size:1.1em;font-weight:bold;color:#1a73e8;margin:4px 0;}"
+        ".capacity-note{color:#555;margin:4px 0;}"
         "</style></head><body>"
     )
     parts.append(f"<h1>送迎ルート {target_date.isoformat()}</h1>")
@@ -460,11 +467,23 @@ def render_html(target_date, base_address, trips_data):
             parts.append(f"<h2>{trip['label']}</h2><p>対象なし</p>")
             continue
 
-        size_text = ", ".join(f"{size}{count}" for size, count in trip["size_counts"].items())
-        parts.append(
-            f"<h2>{trip['label']} 第{trip['trip_no']}便 "
-            f"(積載: {size_text} / 容量 {trip['loaded_units']}/{trip['capacity_units']})</h2>"
+        size_text = "・".join(
+            f"{size}{trip['size_counts'][size]}個"
+            for size in CRATE_SIZE_ORDER
+            if trip["size_counts"].get(size)
         )
+        remaining_text = "・".join(
+            f"{size}{trip['remaining_counts'][size]}個"
+            for size in CRATE_SIZE_ORDER
+            if trip["remaining_counts"].get(size)
+        )
+        parts.append(f"<h2>{trip['label']} 第{trip['trip_no']}便</h2>")
+        parts.append(f"<p class='departure'>出発時刻: {trip['departure']}</p>")
+        parts.append(f"<p class='capacity-note'>積載: {size_text}</p>")
+        if remaining_text:
+            parts.append(f"<p class='capacity-note'>あとまだ積めます: {remaining_text}</p>")
+        else:
+            parts.append("<p class='capacity-note'>満載です</p>")
         parts.append("<table><tr><th>順番</th><th>名前</th><th>住所</th><th>希望時刻</th><th>クレート</th></tr>")
         parts.append(f"<tr><td>出発</td><td colspan='2'>{base_address}</td><td>{trip['departure']}</td><td>-</td></tr>")
         for i, row in enumerate(trip["rows"], start=1):
