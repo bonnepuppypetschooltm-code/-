@@ -156,8 +156,9 @@ def estimate_leg_minutes(base_coords, stops, avg_speed_kmh, route_distance_facto
 
 
 def normalize_address(address):
-    """全角/半角や前後の空白の違いを無視して住所を比較するための正規化"""
-    return unicodedata.normalize("NFKC", address.strip())
+    """全角/半角や空白の違いを無視して住所を比較するための正規化"""
+    normalized = unicodedata.normalize("NFKC", address)
+    return re.sub(r"\s+", "", normalized)
 
 
 def estimate_trip_minutes(leg_minutes, stop_minutes):
