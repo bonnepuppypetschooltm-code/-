@@ -28,6 +28,9 @@ import yaml
 
 CALENDAR_SCOPES = ["https://www.googleapis.com/auth/calendar.readonly"]
 
+# カレンダーは日本時間(JST)で運用されているため、その日の0:00-23:59 (JST) を取得する
+JST = datetime.timezone(datetime.timedelta(hours=9))
+
 CAR_MARK = "🚗"
 # 半角 [] () と 全角 ［］（） の両方に対応
 TAG_PATTERN = re.compile(r"[\[(［（]([^\])］）]*)[\])］）]")
@@ -290,8 +293,8 @@ def get_calendar_service(config):
 
 
 def fetch_events(service, calendar_id, target_date):
-    start = datetime.datetime.combine(target_date, datetime.time.min).isoformat() + "Z"
-    end = datetime.datetime.combine(target_date, datetime.time.max).isoformat() + "Z"
+    start = datetime.datetime.combine(target_date, datetime.time.min, tzinfo=JST).isoformat()
+    end = datetime.datetime.combine(target_date, datetime.time.max, tzinfo=JST).isoformat()
     result = (
         service.events()
         .list(
