@@ -15,6 +15,7 @@ Google カレンダーの予定から「🚗」マーク付きの園児を抽出
 
 import argparse
 import datetime
+import itertools
 import json
 import math
 import os
@@ -197,6 +198,122 @@ def estimate_trip_minutes(leg_minutes):
     if any(m is None for m in leg_minutes):
         return None
     return sum(leg_minutes)
+
+
+def cumulative_arrival_minutes(leg_minutes, n):
+    """leg_minutes(店舗 -> 1件目 -> ... -> 店舗)から、店舗出発を起点とした
+    各お宅への累計移動時間(分)のリスト(長さ n)を返す。
+    途中で区間が不明(None)になったら、それ以降は None になる。
+    """
+    cumulative = []
+    running = 0.0
+    broken = False
+    for leg in leg_minutes[:n]:
+        if leg is None:
+            broken = True
+        if broken:
+            cumulative.append(None)
+        else:
+            running += leg
+            cumulative.append(running)
+    return cumulative
+
+
+def evaluate_departure(trip_stops, leg_minutes, target_date, buffer_minutes):
+    """trip_stopsの並び順での累計移動時間(cumulative)をもとに、
+    時刻指定のあるお宅すべてに合わせた出発時刻(departure)と、
+    その並び順の良さを表す margin(分、大きいほど余裕がある)を計算する。
+
+    - 「まで」指定のお宅: 出発時刻 + 累計移動時間 <= 希望時刻 - buffer_minutes
+      を満たす最も遅い出発時刻を求める
+    - 「以降」指定のお宅: 出発時刻 + 累計移動時間 >= 希望時刻
+      を満たす最も早い出発時刻(=ちょうど希望時刻に到着)を求める
+
+    両方が混在する場合、margin = (まで制約の上限) - (以降制約の下限) で、
+    margin >= 0 ならすべて満たせる。departure は「まで」制約があれば
+    その上限(最も遅い時刻)、なければ「以降」制約の下限を使う。
+
+    時刻指定のあるお宅が無い場合は (None, None, cumulative) を返す。
+    """
+    cumulative = cumulative_arrival_minutes(leg_minutes, len(trip_stops))
+
+    by_candidates = []
+    after_candidates = []
+    for stop, cum in zip(trip_stops, cumulative):
+        if stop.requested_time is None or cum is None:
+            continue
+        requested_dt = datetime.datetime.combine(target_date, stop.requested_time)
+        if stop.requested_time_type == "after":
+            after_candidates.append(requested_dt - datetime.timedelta(minutes=cum))
+        else:
+            by_candidates.append(requested_dt - datetime.timedelta(minutes=cum + buffer_minutes))
+
+    if not by_candidates and not after_candidates:
+        return None, None, cumulative
+
+    upper = min(by_candidates) if by_candidates else None
+    lower = max(after_candidates) if after_candidates else None
+
+    if upper is not None and lower is not None:
+        margin = (upper - lower).total_seconds() / 60
+        departure = upper
+    elif upper is not None:
+        margin = float("inf")
+        departure = upper
+    else:
+        margin = float("inf")
+        departure = lower
+
+    return departure, margin, cumulative
+
+
+def order_stops_for_schedule(trip_stops, base_coords, avg_speed_kmh, route_distance_factor,
+                              travel_time_overrides, stop_minutes, target_date, buffer_minutes,
+                              is_dropoff, max_anchors=7):
+    """時刻指定のあるお宅(アンカー)の順番を入れ替えて、すべての希望時刻に
+    なるべく合うような訪問順を探す。
+
+    時刻指定のないお宅は、朝のお迎え便ならアンカーの後ろ、夕方の送り便なら
+    アンカーの前に固定したまま、アンカー同士の順番だけ並べ替えて試す
+    (アンカーが多い場合は計算量を抑えるため並べ替えを行わない)。
+
+    戻り値: (trip_stops, leg_minutes, departure, cumulative)
+    departure は時刻指定のあるお宅が無い場合は None。
+    """
+    anchors = [s for s in trip_stops if s.requested_time is not None]
+    others = [s for s in trip_stops if s.requested_time is None]
+
+    if len(anchors) <= 1 or len(anchors) > max_anchors:
+        candidates = [trip_stops]
+    else:
+        candidates = []
+        for perm in itertools.permutations(anchors):
+            if is_dropoff:
+                candidates.append(list(others) + list(perm))
+            else:
+                candidates.append(list(perm) + list(others))
+
+    best = None
+    for candidate_stops in candidates:
+        leg_minutes = estimate_leg_minutes(
+            base_coords, candidate_stops, avg_speed_kmh, route_distance_factor,
+            travel_time_overrides, stop_minutes,
+        )
+        departure, margin, cumulative = evaluate_departure(
+            candidate_stops, leg_minutes, target_date, buffer_minutes
+        )
+        if margin is None:
+            margin = float("inf")
+        # 同じ margin (例: すべて「以降」指定で制約が無い) の場合は、
+        # 全体の所要時間が短い順を優先する
+        trip_minutes = estimate_trip_minutes(leg_minutes)
+        tie_breaker = -trip_minutes if trip_minutes is not None else float("-inf")
+        score = (margin, tie_breaker)
+        if best is None or score > best[4]:
+            best = (candidate_stops, leg_minutes, departure, cumulative, score)
+
+    candidate_stops, leg_minutes, departure, cumulative, _ = best
+    return candidate_stops, leg_minutes, departure, cumulative
 
 
 DEFAULT_CONFIG = {
@@ -660,51 +777,25 @@ def build_route(target_date, config, events, geocode_enabled=True):
                 size: remaining_units // weight for size, weight in crate_weights.items()
             }
 
-            leg_minutes = estimate_leg_minutes(
-                base_coords,
+            trip_stops, leg_minutes, departure, cumulative_minutes = order_stops_for_schedule(
                 trip_stops,
+                base_coords,
                 config.get("avg_speed_kmh", 20),
                 config.get("route_distance_factor", 1.3),
                 config.get("travel_time_overrides"),
                 config.get("stop_minutes", 5),
+                target_date,
+                buffer_minutes,
+                is_dropoff=default_is_arrival_target,
             )
 
-            requested_times = [s.requested_time for s in trip_stops if s.requested_time]
-            if requested_times:
-                # 時刻指定があるお宅(基準のお宅)に間に合うよう、そこまでの移動時間を
-                # 逆算して出発時刻を決める。
-                # 朝のお迎え便: 並び順の都合上、最初に時刻指定があるお宅が
-                #   一番早い希望時刻になる(基準のお宅)
-                # 夕方の送り便: 並び順の都合上、最後に時刻指定があるお宅が
-                #   一番遅い希望時刻になる(基準のお宅)
+            if departure is None:
                 if default_is_arrival_target:
-                    anchor_idx = max(
-                        idx for idx, s in enumerate(trip_stops) if s.requested_time is not None
-                    )
+                    # 時刻指定がない場合、default_start (例: 17:00) に最初のお宅へ
+                    # 到着する目安になるよう、出発時刻を前倒しする
+                    departure = default_start - datetime.timedelta(minutes=buffer_minutes)
                 else:
-                    anchor_idx = min(
-                        idx for idx, s in enumerate(trip_stops) if s.requested_time is not None
-                    )
-                anchor = trip_stops[anchor_idx]
-                anchor_time = anchor.requested_time
-                legs_to_anchor = leg_minutes[: anchor_idx + 1]
-                cumulative_to_anchor = (
-                    sum(legs_to_anchor) if all(m is not None for m in legs_to_anchor) else 0
-                )
-                # "まで" (またはタイプ指定なし): 到着が希望時刻より早くなるよう、
-                #   さらに departure_buffer_minutes 分早めに出発する
-                # "以降": 希望時刻ちょうどに到着するよう出発時刻を決める
-                #   (それより早く着かないようにする)
-                margin = buffer_minutes if anchor.requested_time_type != "after" else 0
-                departure = datetime.datetime.combine(
-                    target_date, anchor_time
-                ) - datetime.timedelta(minutes=cumulative_to_anchor + margin)
-            elif default_is_arrival_target:
-                # 時刻指定がない場合、default_start (例: 17:00) に最初のお宅へ
-                # 到着する目安になるよう、出発時刻を前倒しする
-                departure = default_start - datetime.timedelta(minutes=buffer_minutes)
-            else:
-                departure = default_start
+                    departure = default_start
 
             trip_minutes = estimate_trip_minutes(leg_minutes)
             if trip_minutes is not None:
@@ -712,20 +803,6 @@ def build_route(target_date, config, events, geocode_enabled=True):
                 arrival_text = arrival.strftime("%H:%M") + " 頃 (目安)"
             else:
                 arrival_text = "-"
-
-            # 出発時刻からの累計移動時間(分)。出発時刻を画面上で変更したときに
-            # 各お宅への到着予定・帰着予定を再計算するために使う
-            cumulative_minutes = []
-            running = 0.0
-            broken = False
-            for leg in leg_minutes[:len(trip_stops)]:
-                if leg is None:
-                    broken = True
-                if broken:
-                    cumulative_minutes.append(None)
-                else:
-                    running += leg
-                    cumulative_minutes.append(running)
 
             trip = {
                 "label": label,
