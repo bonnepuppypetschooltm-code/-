@@ -766,17 +766,28 @@ def render_html(target_date, base_address, trips_data):
             for size in CRATE_SIZE_ORDER
             if trip["remaining_counts"].get(size)
         )
+        trip_minutes = trip["trip_minutes"]
+        trip_minutes_attr = trip_minutes if trip_minutes is not None else ""
+        if trip_minutes is not None:
+            departure_dt = datetime.datetime.strptime(trip["departure"], "%H:%M")
+            arrival_value = (departure_dt + datetime.timedelta(minutes=trip_minutes)).strftime("%H:%M")
+            arrival_input = (
+                f"<input type='time' id='arr-{trip_idx}' value='{arrival_value}' "
+                f"data-trip-minutes='{trip_minutes_attr}' oninput='recalcFromArrival({trip_idx})' "
+                f"onchange='recalcFromArrival({trip_idx})'>"
+            )
+        else:
+            arrival_input = (
+                f"<input type='time' id='arr-{trip_idx}' data-trip-minutes='' disabled> (目安計算不可)"
+            )
+
         parts.append(f"<h2>{trip['label']} 第{trip['trip_no']}便</h2>")
         parts.append(
             "<p class='departure'>出発時刻: "
             f"<input type='time' id='dep-{trip_idx}' value='{trip['departure']}' "
-            f"oninput='recalcTrip({trip_idx})'></p>"
+            f"oninput='recalcFromDeparture({trip_idx})' onchange='recalcFromDeparture({trip_idx})'></p>"
         )
-        parts.append(
-            f"<p class='departure'>帰着予定: <span data-trip='{trip_idx}' "
-            f"data-min='{trip['trip_minutes'] if trip['trip_minutes'] is not None else ''}' "
-            f"data-suffix=' 頃 (目安)'>{trip['arrival']}</span></p>"
-        )
+        parts.append(f"<p class='departure'>帰着予定: {arrival_input}</p>")
         parts.append(f"<p class='capacity-note'>積載: {size_text}</p>")
         if remaining_text:
             parts.append(f"<p class='capacity-note'>あとまだ積めます: {remaining_text}</p>")
@@ -795,7 +806,7 @@ def render_html(target_date, base_address, trips_data):
             )
         parts.append(
             f"<tr><td>帰着</td><td colspan='2'>{base_address}</td><td>{trip['arrival']}</td>"
-            f"<td data-trip='{trip_idx}' data-min='{trip['trip_minutes'] if trip['trip_minutes'] is not None else ''}' "
+            f"<td data-trip='{trip_idx}' data-min='{trip_minutes_attr}' "
             f"data-suffix=' 頃 (目安)'>{trip['arrival']}</td><td>-</td><td>-</td></tr>"
         )
         parts.append("</table>")
@@ -804,21 +815,39 @@ def render_html(target_date, base_address, trips_data):
 
     parts.append(
         "<script>"
-        "function recalcTrip(tripIdx){"
-        "var inp=document.getElementById('dep-'+tripIdx);"
-        "var p=inp.value.split(':');"
-        "var base=parseInt(p[0],10)*60+parseInt(p[1],10);"
+        "function timeToMinutes(value){"
+        "var p=value.split(':');return parseInt(p[0],10)*60+parseInt(p[1],10);"
+        "}"
+        "function minutesToTime(total){"
+        "total=Math.round(total);total=((total%1440)+1440)%1440;"
+        "var h=Math.floor(total/60);var m=total%60;"
+        "return (h<10?'0':'')+h+':'+(m<10?'0':'')+m;"
+        "}"
+        "function recalcFromDeparture(tripIdx){"
+        "var dep=document.getElementById('dep-'+tripIdx);"
+        "if(!dep.value)return;"
+        "var base=timeToMinutes(dep.value);"
         "var cells=document.querySelectorAll('[data-trip=\"'+tripIdx+'\"]');"
         "cells.forEach(function(cell){"
         "var min=cell.getAttribute('data-min');"
         "if(min===null||min===''){cell.textContent='-';return;}"
-        "var total=Math.round(base+parseFloat(min));"
-        "total=((total%1440)+1440)%1440;"
-        "var h=Math.floor(total/60);var m=total%60;"
-        "var hh=(h<10?'0':'')+h;var mm=(m<10?'0':'')+m;"
         "var suffix=cell.getAttribute('data-suffix')||'';"
-        "cell.textContent=hh+':'+mm+suffix;"
+        "cell.textContent=minutesToTime(base+parseFloat(min))+suffix;"
         "});"
+        "var arr=document.getElementById('arr-'+tripIdx);"
+        "var tripMin=arr.getAttribute('data-trip-minutes');"
+        "if(tripMin!==null&&tripMin!==''){"
+        "arr.value=minutesToTime(base+parseFloat(tripMin));"
+        "}"
+        "}"
+        "function recalcFromArrival(tripIdx){"
+        "var arr=document.getElementById('arr-'+tripIdx);"
+        "if(!arr.value)return;"
+        "var tripMin=arr.getAttribute('data-trip-minutes');"
+        "if(tripMin===null||tripMin==='')return;"
+        "var dep=document.getElementById('dep-'+tripIdx);"
+        "dep.value=minutesToTime(timeToMinutes(arr.value)-parseFloat(tripMin));"
+        "recalcFromDeparture(tripIdx);"
         "}"
         "</script>"
     )
