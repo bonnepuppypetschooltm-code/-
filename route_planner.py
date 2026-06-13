@@ -511,11 +511,33 @@ def main():
         default=None,
         help="そのお宅 → 店舗 までの所要時間(分) (--set-travel-time と併用)",
     )
+    parser.add_argument(
+        "--list-events",
+        action="store_true",
+        help="--date で指定した日のカレンダーの予定を、すべて(🚗マーク以外も含めて)一覧表示して終了する"
+        "(🚗の予定が反映されない場合の確認用)",
+    )
     args = parser.parse_args()
 
     target_date = (
         datetime.date.fromisoformat(args.date) if args.date else datetime.date.today()
     )
+
+    if args.list_events:
+        config = load_config(args.config)
+        service = get_calendar_service(config)
+        events = fetch_events(service, config["calendar_id"], target_date)
+        if not events:
+            print(f"{target_date.isoformat()} の予定は見つかりませんでした。")
+        else:
+            print(f"{target_date.isoformat()} の予定一覧:")
+            for event in events:
+                title = event.get("summary", "(タイトルなし)")
+                start_info = event.get("start", {})
+                start = start_info.get("dateTime") or start_info.get("date") or "?"
+                location = event.get("location", "").strip() or "(場所未設定)"
+                print(f"- {start} {title}  場所: {location}")
+        return
 
     if args.set_travel_time:
         config = load_config(args.config)
