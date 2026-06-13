@@ -390,20 +390,30 @@ def classify_stop(name, tag_text, location, event_time):
     return pickup_stop, dropoff_stop
 
 
-def split_into_trips(stops, capacity_units, crate_weights, default_crate_size, time_gap_split_minutes=None):
+def split_into_trips(stops, capacity_units, crate_weights, default_crate_size, time_gap_split_minutes=None, is_dropoff=False):
     """クレートサイズごとの占有units数をもとに、車に収まる範囲でトリップに分割する。
 
-    時刻指定があるお宅はその時刻順を優先する。時刻指定がないお宅は、
-    店舗から遠い順 (遠方を先に回り、店舗近くで締めくくる) に並べる。
+    朝のお迎え便 (is_dropoff=False): 時刻指定があるお宅はその時刻順を優先する。
+    時刻指定がないお宅は、店舗から遠い順 (遠方を先に回り、店舗近くで締めくくる) に並べる。
+
+    夕方の送り便 (is_dropoff=True): 時刻指定がないお宅を先に (店舗から遠い順)、
+    時刻指定があるお宅を最後にその時刻順で並べる。最後に訪問するお宅の希望時刻に
+    間に合うよう、出発時刻を逆算するため (build_route側で計算)。
 
     時刻指定のあるお宅同士の希望時刻が time_gap_split_minutes 以上離れている場合は、
     その間で一旦店舗に戻ることにして便を分割する
     (待ち時間が長くなりすぎるのを避けるため)。
     """
-    def sort_key(s):
-        if s.requested_time:
-            return (0, s.requested_time, 0.0)
-        return (1, datetime.time(0, 0), -(s.distance_from_base or 0.0))
+    if is_dropoff:
+        def sort_key(s):
+            if s.requested_time:
+                return (1, s.requested_time, 0.0)
+            return (0, datetime.time(0, 0), -(s.distance_from_base or 0.0))
+    else:
+        def sort_key(s):
+            if s.requested_time:
+                return (0, s.requested_time, 0.0)
+            return (1, datetime.time(0, 0), -(s.distance_from_base or 0.0))
 
     sorted_stops = sorted(stops, key=sort_key)
 
@@ -623,7 +633,8 @@ def build_route(target_date, config, events, geocode_enabled=True):
 
         trips = split_into_trips(
             stops, capacity_units, crate_weights, default_crate_size,
-            config.get("time_gap_split_minutes", 60),
+            config.get("time_gap_split_minutes", 60) if default_is_arrival_target else None,
+            is_dropoff=default_is_arrival_target,
         )
         for i, trip_stops in enumerate(trips, start=1):
             size_counts = {}
@@ -632,17 +643,6 @@ def build_route(target_date, config, events, geocode_enabled=True):
                 size = stop.crate_size or default_crate_size
                 size_counts[size] = size_counts.get(size, 0) + 1
                 loaded_units += crate_weights.get(size, crate_weights[default_crate_size])
-
-            requested_times = [s.requested_time for s in trip_stops if s.requested_time]
-            if requested_times:
-                earliest = datetime.datetime.combine(target_date, min(requested_times))
-                departure = earliest - datetime.timedelta(minutes=buffer_minutes)
-            elif default_is_arrival_target:
-                # 時刻指定がない場合、default_start (例: 17:00) に最初のお宅へ
-                # 到着する目安になるよう、出発時刻を前倒しする
-                departure = default_start - datetime.timedelta(minutes=buffer_minutes)
-            else:
-                departure = default_start
 
             remaining_units = capacity_units - loaded_units
             remaining_counts = {
@@ -657,6 +657,36 @@ def build_route(target_date, config, events, geocode_enabled=True):
                 config.get("travel_time_overrides"),
                 config.get("stop_minutes", 5),
             )
+
+            requested_times = [s.requested_time for s in trip_stops if s.requested_time]
+            if requested_times:
+                if default_is_arrival_target:
+                    # 夕方の送り便: 並び順の都合上、最後に時刻指定があるお宅が
+                    # 一番遅い希望時刻になる。そのお宅に間に合うよう、
+                    # そこまでの移動時間を逆算して出発時刻を決める
+                    anchor_idx = max(
+                        idx for idx, s in enumerate(trip_stops) if s.requested_time is not None
+                    )
+                    anchor_time = trip_stops[anchor_idx].requested_time
+                    legs_to_anchor = leg_minutes[: anchor_idx + 1]
+                    if all(m is not None for m in legs_to_anchor):
+                        cumulative_to_anchor = sum(legs_to_anchor)
+                        departure = datetime.datetime.combine(
+                            target_date, anchor_time
+                        ) - datetime.timedelta(minutes=cumulative_to_anchor + buffer_minutes)
+                    else:
+                        earliest = datetime.datetime.combine(target_date, min(requested_times))
+                        departure = earliest - datetime.timedelta(minutes=buffer_minutes)
+                else:
+                    earliest = datetime.datetime.combine(target_date, min(requested_times))
+                    departure = earliest - datetime.timedelta(minutes=buffer_minutes)
+            elif default_is_arrival_target:
+                # 時刻指定がない場合、default_start (例: 17:00) に最初のお宅へ
+                # 到着する目安になるよう、出発時刻を前倒しする
+                departure = default_start - datetime.timedelta(minutes=buffer_minutes)
+            else:
+                departure = default_start
+
             trip_minutes = estimate_trip_minutes(leg_minutes)
             if trip_minutes is not None:
                 arrival = departure + datetime.timedelta(minutes=trip_minutes)
