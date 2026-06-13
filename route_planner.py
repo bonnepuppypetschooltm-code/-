@@ -321,7 +321,7 @@ def fetch_events(service, calendar_id, target_date):
 
 
 def parse_event(event, target_date):
-    """🚗マーク付きイベントを (name, tag_text, address, event_time) にパースする。
+    """🚗マーク付きイベントを (name, tag_text, address) にパースする。
     対象外なら None を返す。
     """
     title = event.get("summary", "")
@@ -341,16 +341,10 @@ def parse_event(event, target_date):
     if not name:
         name = "(名前未設定)"
 
-    event_time = None
-    start_info = event.get("start", {})
-    if "dateTime" in start_info:
-        dt = datetime.datetime.fromisoformat(start_info["dateTime"])
-        event_time = dt.time()
-
-    return name, tag_text, location, event_time
+    return name, tag_text, location
 
 
-def classify_stop(name, tag_text, location, event_time):
+def classify_stop(name, tag_text, location):
     """(pickup_stop_or_None, dropoff_stop_or_None) を返す"""
     has_pickup_tag = bool(re.search(r"(迎え|朝)のみ", tag_text))
     has_dropoff_tag = bool(re.search(r"(送り|夕)のみ", tag_text))
@@ -391,11 +385,8 @@ def classify_stop(name, tag_text, location, event_time):
     dropoff_stop = None
 
     if is_roundtrip or has_pickup_tag:
-        t = pickup_time if pickup_time else event_time
-        pickup_stop = Stop(name, location, t, crate_size)
+        pickup_stop = Stop(name, location, pickup_time, crate_size)
     if is_roundtrip or has_dropoff_tag:
-        # 往復で夕方の希望時刻が指定されていない場合、カレンダーの予定時刻(朝の時刻)を
-        # そのまま夕方の希望時刻として使わない (出発時刻の計算がおかしくなるため)
         dropoff_stop = Stop(name, location, dropoff_time, crate_size)
 
     return pickup_stop, dropoff_stop
@@ -604,8 +595,8 @@ def build_route(target_date, config, events, geocode_enabled=True):
         parsed = parse_event(event, target_date)
         if not parsed:
             continue
-        name, tag_text, location, event_time = parsed
-        pickup, dropoff = classify_stop(name, tag_text, location, event_time)
+        name, tag_text, location = parsed
+        pickup, dropoff = classify_stop(name, tag_text, location)
         if pickup:
             pickup_stops.append(pickup)
         if dropoff:
