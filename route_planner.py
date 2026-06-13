@@ -636,54 +636,6 @@ def build_embed_url(base_address, stop_addresses):
     return f"https://maps.google.com/maps?saddr={saddr}&daddr={daddr}&output=embed"
 
 
-def build_maps_url_compact(base_address, stop_addresses):
-    """LINE Notify (1000文字制限) 向けに、URLエンコードせず短くしたGoogleマップ経路リンクを作る"""
-    points = [base_address] + stop_addresses + [base_address]
-    cleaned = [p.replace(" ", "+") for p in points]
-    origin = cleaned[0]
-    destination = cleaned[-1]
-    waypoints = "|".join(cleaned[1:-1])
-    url = (
-        "https://www.google.com/maps/dir/?api=1"
-        f"&origin={origin}&destination={destination}&travelmode=driving"
-    )
-    if waypoints:
-        url += f"&waypoints={waypoints}"
-    return url
-
-
-def build_line_messages(target_date, base_address, trips_data):
-    """LINE Notifyで送るメッセージのリストを作る (便ごとに1メッセージ)"""
-    messages = []
-    date_str = target_date.strftime("%m/%d")
-    for trip in trips_data:
-        if trip["rows"] is None:
-            continue
-        lines = [f"\n【{date_str} {trip['label']} 第{trip['trip_no']}便】"]
-        lines.append(f"出発: {trip['departure']}  帰着予定: {trip['arrival']}")
-        for i, row in enumerate(trip["rows"], start=1):
-            lines.append(f"{i}. {row['name']} ({row['time']})")
-        lines.append(build_maps_url_compact(base_address, [row["address"] for row in trip["rows"]]))
-        messages.append("\n".join(lines))
-    return messages
-
-
-def send_line_notify(token, message):
-    """LINE Notify (https://notify-api.line.me/api/notify) でメッセージを送る"""
-    data = urllib.parse.urlencode({"message": message}).encode("utf-8")
-    req = urllib.request.Request(
-        "https://notify-api.line.me/api/notify",
-        data=data,
-        headers={
-            "Authorization": f"Bearer {token}",
-            "Content-Type": "application/x-www-form-urlencoded",
-        },
-        method="POST",
-    )
-    with urllib.request.urlopen(req, timeout=10) as resp:
-        return resp.status
-
-
 def main():
     parser = argparse.ArgumentParser(description="犬の幼稚園 送迎ルート自動作成")
     parser.add_argument("--config", default="config.yaml", help="設定ファイルのパス")
@@ -706,11 +658,6 @@ def main():
         "--no-open",
         action="store_true",
         help="作成後にブラウザで自動的に開かない",
-    )
-    parser.add_argument(
-        "--no-line",
-        action="store_true",
-        help="config.yamlにline_notify_tokenが設定されていても、LINEへの通知を送らない",
     )
     parser.add_argument(
         "--set-travel-time",
@@ -789,17 +736,6 @@ def main():
         f.write(html)
 
     print(f"作成しました: {os.path.abspath(output_path)}")
-
-    line_token = config.get("line_notify_token")
-    if line_token and not args.no_line:
-        messages = build_line_messages(target_date, base_address, trips_data)
-        if messages:
-            for message in messages:
-                try:
-                    send_line_notify(line_token, message)
-                except Exception as e:
-                    print(f"警告: LINE通知の送信に失敗しました: {e}", file=sys.stderr)
-            print("LINEに通知を送信しました。")
 
     if not args.no_open:
         import webbrowser
