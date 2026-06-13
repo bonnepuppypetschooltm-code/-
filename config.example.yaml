@@ -59,3 +59,8 @@ calendar_id: "primary"
 # Google API 認証情報ファイルのパス
 google_oauth_client_secret_file: "credentials.json"
 google_oauth_token_file: "token.json"
+
+# LINE Notify のトークン (設定するとスタッフのLINEに自動で通知が届きます)
+# https://notify-bot.line.me/ で取得 (無料・LINEアカウントでログインするだけ)
+# 設定しない場合はこの行を削除してください (LINE通知は行われません)
+# line_notify_token: "ここに取得したトークンを貼り付け"
