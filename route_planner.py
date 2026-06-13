@@ -34,7 +34,8 @@ JST = datetime.timezone(datetime.timedelta(hours=9))
 CAR_MARK = "🚗"
 # 半角 [] () と 全角 ［］（） の両方に対応
 TAG_PATTERN = re.compile(r"[\[(［（]([^\])］）]*)[\])］）]")
-TIME_PATTERN = re.compile(r"(朝|夕)?(\d{1,2})[:：](\d{2})(まで|以降)?")
+# 「8:00」「8：00」「8時」「8時30分」のいずれの書き方にも対応する
+TIME_PATTERN = re.compile(r"(朝|夕)?(\d{1,2})(?:[:：](\d{2})|時(?:(\d{1,2})分)?)(まで|以降)?")
 
 # 「特大」は「大」の部分文字列を含むため、長い名前から先に判定する
 CRATE_SIZE_ORDER = ["特大", "大", "中", "小"]
@@ -359,8 +360,9 @@ def classify_stop(name, tag_text, location):
     dropoff_time = None
     dropoff_time_type = "by"
     unlabeled_times = []
-    for prefix, h, m, suffix in TIME_PATTERN.findall(tag_text):
-        t = datetime.time(int(h), int(m))
+    for prefix, h, m_colon, m_kanji, suffix in TIME_PATTERN.findall(tag_text):
+        minute = m_colon or m_kanji or "0"
+        t = datetime.time(int(h), int(minute))
         time_type = "after" if suffix == "以降" else "by"
         if prefix == "朝":
             pickup_time, pickup_time_type = t, time_type
