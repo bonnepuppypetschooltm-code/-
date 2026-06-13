@@ -34,7 +34,7 @@ JST = datetime.timezone(datetime.timedelta(hours=9))
 CAR_MARK = "🚗"
 # 半角 [] () と 全角 ［］（） の両方に対応
 TAG_PATTERN = re.compile(r"[\[(［（]([^\])］）]*)[\])］）]")
-TIME_PATTERN = re.compile(r"(朝|夕)?(\d{1,2})[:：](\d{2})")
+TIME_PATTERN = re.compile(r"(朝|夕)?(\d{1,2})[:：](\d{2})(まで|以降)?")
 
 # 「特大」は「大」の部分文字列を含むため、長い名前から先に判定する
 CRATE_SIZE_ORDER = ["特大", "大", "中", "小"]
@@ -44,17 +44,21 @@ GEOCODE_URL = "https://msearch.gsi.go.jp/address-search/AddressSearch?q="
 
 
 class Stop:
-    def __init__(self, name, address, requested_time=None, crate_size=None):
+    def __init__(self, name, address, requested_time=None, crate_size=None, requested_time_type="by"):
         self.name = name
         self.address = address
         self.requested_time = requested_time
+        # "by": その時刻までに到着 (まで、または指定なし)
+        # "after": その時刻以降に到着 (以降)
+        self.requested_time_type = requested_time_type
         self.crate_size = crate_size
         self.distance_from_base = None
         self.coords = None
 
     def __repr__(self):
         t = self.requested_time.strftime("%H:%M") if self.requested_time else "-"
-        return f"{self.name} ({self.address}) [指定: {t}, クレート: {self.crate_size}]"
+        suffix = {"by": "まで", "after": "以降"}.get(self.requested_time_type, "")
+        return f"{self.name} ({self.address}) [指定: {t}{suffix if self.requested_time else ''}, クレート: {self.crate_size}]"
 
 
 def crate_units(crate_capacity):
@@ -351,29 +355,32 @@ def classify_stop(name, tag_text, location):
     is_roundtrip = "往復" in tag_text or (not has_pickup_tag and not has_dropoff_tag)
 
     pickup_time = None
+    pickup_time_type = "by"
     dropoff_time = None
+    dropoff_time_type = "by"
     unlabeled_times = []
-    for prefix, h, m in TIME_PATTERN.findall(tag_text):
+    for prefix, h, m, suffix in TIME_PATTERN.findall(tag_text):
         t = datetime.time(int(h), int(m))
+        time_type = "after" if suffix == "以降" else "by"
         if prefix == "朝":
-            pickup_time = t
+            pickup_time, pickup_time_type = t, time_type
         elif prefix == "夕":
-            dropoff_time = t
+            dropoff_time, dropoff_time_type = t, time_type
         else:
-            unlabeled_times.append(t)
+            unlabeled_times.append((t, time_type))
 
     if len(unlabeled_times) >= 2:
         if pickup_time is None:
-            pickup_time = unlabeled_times[0]
+            pickup_time, pickup_time_type = unlabeled_times[0]
         if dropoff_time is None:
-            dropoff_time = unlabeled_times[1]
+            dropoff_time, dropoff_time_type = unlabeled_times[1]
     elif len(unlabeled_times) == 1:
         if pickup_time is None and dropoff_time is None:
-            pickup_time = dropoff_time = unlabeled_times[0]
+            (pickup_time, pickup_time_type) = (dropoff_time, dropoff_time_type) = unlabeled_times[0]
         elif pickup_time is None:
-            pickup_time = unlabeled_times[0]
+            pickup_time, pickup_time_type = unlabeled_times[0]
         elif dropoff_time is None:
-            dropoff_time = unlabeled_times[0]
+            dropoff_time, dropoff_time_type = unlabeled_times[0]
 
     crate_size = None
     for size in CRATE_SIZE_ORDER:
@@ -385,9 +392,9 @@ def classify_stop(name, tag_text, location):
     dropoff_stop = None
 
     if is_roundtrip or has_pickup_tag:
-        pickup_stop = Stop(name, location, pickup_time, crate_size)
+        pickup_stop = Stop(name, location, pickup_time, crate_size, pickup_time_type)
     if is_roundtrip or has_dropoff_tag:
-        dropoff_stop = Stop(name, location, dropoff_time, crate_size)
+        dropoff_stop = Stop(name, location, dropoff_time, crate_size, dropoff_time_type)
 
     return pickup_stop, dropoff_stop
 
@@ -676,16 +683,20 @@ def build_route(target_date, config, events, geocode_enabled=True):
                     anchor_idx = min(
                         idx for idx, s in enumerate(trip_stops) if s.requested_time is not None
                     )
-                anchor_time = trip_stops[anchor_idx].requested_time
+                anchor = trip_stops[anchor_idx]
+                anchor_time = anchor.requested_time
                 legs_to_anchor = leg_minutes[: anchor_idx + 1]
-                if all(m is not None for m in legs_to_anchor):
-                    cumulative_to_anchor = sum(legs_to_anchor)
-                    departure = datetime.datetime.combine(
-                        target_date, anchor_time
-                    ) - datetime.timedelta(minutes=cumulative_to_anchor + buffer_minutes)
-                else:
-                    earliest = datetime.datetime.combine(target_date, min(requested_times))
-                    departure = earliest - datetime.timedelta(minutes=buffer_minutes)
+                cumulative_to_anchor = (
+                    sum(legs_to_anchor) if all(m is not None for m in legs_to_anchor) else 0
+                )
+                # "まで" (またはタイプ指定なし): 到着が希望時刻より早くなるよう、
+                #   さらに departure_buffer_minutes 分早めに出発する
+                # "以降": 希望時刻ちょうどに到着するよう出発時刻を決める
+                #   (それより早く着かないようにする)
+                margin = buffer_minutes if anchor.requested_time_type != "after" else 0
+                departure = datetime.datetime.combine(
+                    target_date, anchor_time
+                ) - datetime.timedelta(minutes=cumulative_to_anchor + margin)
             elif default_is_arrival_target:
                 # 時刻指定がない場合、default_start (例: 17:00) に最初のお宅へ
                 # 到着する目安になるよう、出発時刻を前倒しする
@@ -727,7 +738,11 @@ def build_route(target_date, config, events, geocode_enabled=True):
                 "embed_url": build_embed_url(base_address, [s.address for s in trip_stops]),
             }
             for idx, stop in enumerate(trip_stops):
-                t = stop.requested_time.strftime("%H:%M") if stop.requested_time else "-"
+                if stop.requested_time:
+                    suffix = "以降" if stop.requested_time_type == "after" else "まで"
+                    t = stop.requested_time.strftime("%H:%M") + suffix
+                else:
+                    t = "-"
                 size = stop.crate_size or f"{default_crate_size}(既定)"
                 prev_label = trip_stops[idx - 1].name if idx > 0 else "店舗"
                 next_label = trip_stops[idx + 1].name if idx + 1 < len(trip_stops) else "店舗"
