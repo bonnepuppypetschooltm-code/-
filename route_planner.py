@@ -794,7 +794,10 @@ def render_html(target_date, base_address, trips_data):
         else:
             parts.append("<p class='capacity-note'>満載です</p>")
         parts.append("<table><tr><th>順番</th><th>名前</th><th>住所</th><th>希望時刻</th><th>クレート</th><th>到着予定</th><th>ここまで</th><th>次まで</th></tr>")
-        parts.append(f"<tr><td>出発</td><td colspan='2'>{base_address}</td><td>{trip['departure']}</td><td>-</td><td>-</td><td>-</td><td>-</td></tr>")
+        parts.append(
+            f"<tr><td>出発</td><td colspan='2'>{base_address}</td><td>-</td><td>-</td>"
+            f"<td data-trip='{trip_idx}' data-min='0' data-suffix=''>{trip['departure']}</td><td>-</td><td>-</td></tr>"
+        )
         for i, row in enumerate(trip["rows"], start=1):
             arrival_min = row["arrival_minutes"]
             data_min = f"{arrival_min}" if arrival_min is not None else ""
@@ -805,7 +808,7 @@ def render_html(target_date, base_address, trips_data):
                 f"<td>{row['from']}</td><td>{row['next']}</td></tr>"
             )
         parts.append(
-            f"<tr><td>帰着</td><td colspan='2'>{base_address}</td><td>{trip['arrival']}</td>"
+            f"<tr><td>帰着</td><td colspan='2'>{base_address}</td><td>-</td><td>-</td>"
             f"<td data-trip='{trip_idx}' data-min='{trip_minutes_attr}' "
             f"data-suffix=' 頃 (目安)'>{trip['arrival']}</td><td>-</td><td>-</td></tr>"
         )
