@@ -833,6 +833,14 @@ def build_route(target_date, config, events, geocode_enabled=True):
             else:
                 arrival_text = "-"
 
+            map_points = []
+            if base_coords:
+                map_points.append({"lat": base_coords[0], "lon": base_coords[1], "label": "店", "title": "店舗"})
+                for idx, stop in enumerate(trip_stops, start=1):
+                    if stop.coords:
+                        map_points.append({"lat": stop.coords[0], "lon": stop.coords[1], "label": str(idx), "title": stop.name})
+                map_points.append({"lat": base_coords[0], "lon": base_coords[1], "label": "店", "title": "店舗"})
+
             trip = {
                 "label": label,
                 "trip_no": i,
@@ -844,6 +852,7 @@ def build_route(target_date, config, events, geocode_enabled=True):
                 "rows": [],
                 "maps_url": build_maps_url(base_address, [s.address for s in trip_stops]),
                 "embed_url": build_embed_url(base_address, [s.address for s in trip_stops]),
+                "map_points": map_points,
             }
             for idx, stop in enumerate(trip_stops):
                 if stop.requested_time:
@@ -885,6 +894,10 @@ def render_html(target_date, base_address, trips_data):
     parts.append("<!DOCTYPE html><html lang='ja'><head><meta charset='utf-8'>")
     parts.append(f"<title>送迎ルート {target_date.isoformat()}</title>")
     parts.append(
+        "<link rel='stylesheet' href='https://unpkg.com/leaflet@1.9.4/dist/leaflet.css' />"
+        "<script src='https://unpkg.com/leaflet@1.9.4/dist/leaflet.js'></script>"
+    )
+    parts.append(
         "<style>"
         "body{font-family:sans-serif;margin:20px;}"
         "h1{font-size:1.4em;} h2{margin-top:2em;border-bottom:2px solid #888;padding-bottom:4px;}"
@@ -895,6 +908,11 @@ def render_html(target_date, base_address, trips_data):
         ".maps-link{display:inline-block;margin-top:8px;padding:6px 12px;"
         "background:#1a73e8;color:#fff;text-decoration:none;border-radius:4px;}"
         ".map-embed{width:100%;height:400px;border:0;margin-top:8px;}"
+        ".route-map{width:100%;height:400px;margin-top:8px;border:1px solid #ccc;}"
+        ".num-marker{background:#1a73e8;color:#fff;border-radius:50%;width:28px;height:28px;"
+        "display:flex;align-items:center;justify-content:center;font-weight:bold;font-size:14px;"
+        "border:2px solid #fff;box-shadow:0 1px 3px rgba(0,0,0,.5);}"
+        ".num-marker.store{background:#d93025;}"
         ".departure{font-size:1.1em;font-weight:bold;color:#1a73e8;margin:4px 0;}"
         ".departure input{font-size:1em;font-weight:bold;color:#1a73e8;"
         "border:1px solid #1a73e8;border-radius:4px;padding:2px 4px;}"
@@ -907,6 +925,8 @@ def render_html(target_date, base_address, trips_data):
         "<p class='meta'>出発時刻は下の入力欄で変更できます。"
         "変更すると、到着予定・帰着予定が自動で再計算されます(あくまで目安です)。</p>"
     )
+
+    parts.append("<script>var routeMaps=[];</script>")
 
     trip_idx = 0
     for trip in trips_data:
@@ -973,7 +993,14 @@ def render_html(target_date, base_address, trips_data):
         )
         parts.append("</table>")
         parts.append(f"<a class='maps-link' href='{trip['maps_url']}' target='_blank'>Googleマップでルートを開く</a>")
-        parts.append(f"<iframe class='map-embed' src='{trip['embed_url']}' loading='lazy'></iframe>")
+        if trip["map_points"]:
+            parts.append(f"<div id='route-map-{trip_idx}' class='route-map'></div>")
+            parts.append(
+                f"<script>routeMaps.push({{id:'route-map-{trip_idx}',"
+                f"points:{json.dumps(trip['map_points'], ensure_ascii=False)}}});</script>"
+            )
+        else:
+            parts.append(f"<iframe class='map-embed' src='{trip['embed_url']}' loading='lazy'></iframe>")
 
     parts.append(
         "<script>"
@@ -1011,6 +1038,24 @@ def render_html(target_date, base_address, trips_data):
         "dep.value=minutesToTime(timeToMinutes(arr.value)-parseFloat(tripMin));"
         "recalcFromDeparture(tripIdx);"
         "}"
+        "routeMaps.forEach(function(rm){"
+        "var map=L.map(rm.id);"
+        "L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{"
+        "attribution:'&copy; OpenStreetMap contributors',maxZoom:19"
+        "}).addTo(map);"
+        "var latlngs=[];"
+        "rm.points.forEach(function(p){"
+        "var isStore=(p.label==='店');"
+        "var icon=L.divIcon({"
+        "className:'num-marker'+(isStore?' store':''),"
+        "html:p.label,iconSize:[28,28],iconAnchor:[14,14]"
+        "});"
+        "L.marker([p.lat,p.lon],{icon:icon}).addTo(map).bindTooltip(p.title);"
+        "latlngs.push([p.lat,p.lon]);"
+        "});"
+        "L.polyline(latlngs,{color:'#1a73e8',weight:3,opacity:0.7}).addTo(map);"
+        "map.fitBounds(latlngs,{padding:[20,20]});"
+        "});"
         "</script>"
     )
 
