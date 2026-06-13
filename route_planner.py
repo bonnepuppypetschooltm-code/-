@@ -84,6 +84,20 @@ def save_geocode_cache(cache):
 POSTAL_CODE_PATTERN = re.compile(r"〒?\d{3}-?\d{4}\s*")
 
 
+def _geocode_request(query):
+    """国土地理院 住所検索APIへ1回問い合わせる。失敗時は None"""
+    try:
+        url = GEOCODE_URL + urllib.parse.quote(query)
+        with urllib.request.urlopen(url, timeout=5) as resp:
+            data = json.load(resp)
+        if data:
+            lon, lat = data[0]["geometry"]["coordinates"]
+            return [lat, lon]
+    except Exception:
+        pass
+    return None
+
+
 def geocode(address, cache):
     """住所から (緯度, 経度) を取得する (国土地理院 住所検索API、無料・APIキー不要)"""
     if address in cache and cache[address] is not None:
@@ -93,18 +107,15 @@ def geocode(address, cache):
     # 郵便番号より前の部分は取り除き、郵便番号より後ろの部分だけで検索する
     m = POSTAL_CODE_PATTERN.search(address)
     query = address[m.end():].strip() if m else address.strip()
-    try:
-        url = GEOCODE_URL + urllib.parse.quote(query)
-        with urllib.request.urlopen(url, timeout=5) as resp:
-            data = json.load(resp)
-        if data:
-            lon, lat = data[0]["geometry"]["coordinates"]
-            cache[address] = [lat, lon]
-        else:
-            cache[address] = None
-    except Exception:
-        cache[address] = None
-    return cache[address]
+    result = _geocode_request(query)
+    if result is None:
+        # 「大阪府大阪市北区天神橋4-6-17 上谷ビル1F.2F」のように、番地の後ろに
+        # スペース区切りでビル名・階数が付いている場合は、番地までの部分だけで再検索する
+        first_part = query.split()[0] if query.split() else query
+        if first_part != query:
+            result = _geocode_request(first_part)
+    cache[address] = result
+    return result
 
 
 def haversine_km(p1, p2):
