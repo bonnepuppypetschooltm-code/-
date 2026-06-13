@@ -37,6 +37,8 @@ CAR_MARK = "🚗"
 TAG_PATTERN = re.compile(r"[\[(［（]([^\])］）]*)[\])］）]")
 # 「8:00」「8：00」「8時」「8時30分」のいずれの書き方にも対応する
 TIME_PATTERN = re.compile(r"(朝|夕)?(\d{1,2})(?:[:：](\d{2})|時(?:(\d{1,2})分)?)(まで|以降)?")
+# 連泊ホテルの「(1/2日目)」のような表記
+DAY_PATTERN = re.compile(r"\((\d+)/(\d+)日目\)")
 
 # 「特大」は「大」の部分文字列を含むため、長い名前から先に判定する
 CRATE_SIZE_ORDER = ["特大", "大", "中", "小"]
@@ -443,8 +445,10 @@ def fetch_events(service, calendar_id, target_date):
 
 
 def parse_event(event, target_date):
-    """🚗マーク付きイベントを (name, tag_text, address) にパースする。
+    """🚗マーク付きイベントを (name, tag_text, address, day_info) にパースする。
     対象外なら None を返す。
+    day_info は連泊ホテルの「(1/2日目)」のような表記があれば (日目, 全体日数) の
+    タプル、なければ None。
     """
     title = event.get("summary", "")
     if CAR_MARK not in title:
@@ -456,6 +460,15 @@ def parse_event(event, target_date):
         return None
 
     after_mark = title.split(CAR_MARK, 1)[1].strip()
+
+    # 「(1/2日目)」のような連泊表記を先に取り除く (TAG_PATTERNが半角()も
+    # タグとして扱ってしまうため、先に処理する)
+    day_info = None
+    day_match = DAY_PATTERN.search(after_mark)
+    if day_match:
+        day_info = (int(day_match.group(1)), int(day_match.group(2)))
+        after_mark = DAY_PATTERN.sub("", after_mark).strip()
+
     # 「[往復 朝8:00] [大]」のように複数の[]に分けて書いた場合も
     # まとめて1つのタグとして扱う
     tag_text = " ".join(m.group(1) for m in TAG_PATTERN.finditer(after_mark))
@@ -463,13 +476,13 @@ def parse_event(event, target_date):
     if not name:
         name = "(名前未設定)"
 
-    return name, tag_text, location
+    return name, tag_text, location, day_info
 
 
-def classify_stop(name, tag_text, location):
+def classify_stop(name, tag_text, location, day_info=None):
     """(pickup_stop_or_None, dropoff_stop_or_None) を返す"""
-    has_pickup_tag = bool(re.search(r"(迎え|朝)のみ", tag_text))
-    has_dropoff_tag = bool(re.search(r"(送り|夕)のみ", tag_text))
+    has_pickup_tag = bool(re.search(r"(迎え|朝)のみ", tag_text)) or "チェックインのみ" in tag_text
+    has_dropoff_tag = bool(re.search(r"(送り|夕)のみ", tag_text)) or "チェックアウトのみ" in tag_text
     is_roundtrip = "往復" in tag_text or (not has_pickup_tag and not has_dropoff_tag)
 
     pickup_time = None
@@ -509,6 +522,22 @@ def classify_stop(name, tag_text, location):
 
     pickup_stop = None
     dropoff_stop = None
+
+    # 連泊ホテル「(X/Y日目)」表記がある場合: 中日は送迎なし、
+    # 1日目はお迎え(チェックイン)のみ、最終日は送り(チェックアウト)のみ
+    if day_info is not None:
+        day_num, total_days = day_info
+        if total_days > 1:
+            if 1 < day_num < total_days:
+                return None, None
+            if day_num == 1:
+                if is_roundtrip or has_pickup_tag:
+                    pickup_stop = Stop(name, location, pickup_time, crate_size, pickup_time_type)
+                return pickup_stop, None
+            if day_num == total_days:
+                if is_roundtrip or has_dropoff_tag:
+                    dropoff_stop = Stop(name, location, dropoff_time, crate_size, dropoff_time_type)
+                return None, dropoff_stop
 
     if is_roundtrip or has_pickup_tag:
         pickup_stop = Stop(name, location, pickup_time, crate_size, pickup_time_type)
@@ -721,8 +750,8 @@ def build_route(target_date, config, events, geocode_enabled=True):
         parsed = parse_event(event, target_date)
         if not parsed:
             continue
-        name, tag_text, location = parsed
-        pickup, dropoff = classify_stop(name, tag_text, location)
+        name, tag_text, location, day_info = parsed
+        pickup, dropoff = classify_stop(name, tag_text, location, day_info)
         if pickup:
             pickup_stops.append(pickup)
         if dropoff:
