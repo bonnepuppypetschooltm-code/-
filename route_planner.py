@@ -613,9 +613,9 @@ def build_route(target_date, config, events, geocode_enabled=True):
     buffer_minutes = config.get("departure_buffer_minutes", 15)
 
     trips_data = []
-    for label, stops, default_start in (
-        ("朝のお迎え便", pickup_stops, default_morning_start),
-        ("夕方の送り便", dropoff_stops, default_evening_start),
+    for label, stops, default_start, default_is_arrival_target in (
+        ("朝のお迎え便", pickup_stops, default_morning_start, False),
+        ("夕方の送り便", dropoff_stops, default_evening_start, True),
     ):
         if not stops:
             trips_data.append({"label": label, "rows": None})
@@ -637,6 +637,10 @@ def build_route(target_date, config, events, geocode_enabled=True):
             if requested_times:
                 earliest = datetime.datetime.combine(target_date, min(requested_times))
                 departure = earliest - datetime.timedelta(minutes=buffer_minutes)
+            elif default_is_arrival_target:
+                # 時刻指定がない場合、default_start (例: 17:00) に最初のお宅へ
+                # 到着する目安になるよう、出発時刻を前倒しする
+                departure = default_start - datetime.timedelta(minutes=buffer_minutes)
             else:
                 departure = default_start
 
@@ -660,6 +664,20 @@ def build_route(target_date, config, events, geocode_enabled=True):
             else:
                 arrival_text = "-"
 
+            # 出発時刻からの累計移動時間(分)。出発時刻を画面上で変更したときに
+            # 各お宅への到着予定・帰着予定を再計算するために使う
+            cumulative_minutes = []
+            running = 0.0
+            broken = False
+            for leg in leg_minutes[:len(trip_stops)]:
+                if leg is None:
+                    broken = True
+                if broken:
+                    cumulative_minutes.append(None)
+                else:
+                    running += leg
+                    cumulative_minutes.append(running)
+
             trip = {
                 "label": label,
                 "trip_no": i,
@@ -667,6 +685,7 @@ def build_route(target_date, config, events, geocode_enabled=True):
                 "remaining_counts": remaining_counts,
                 "departure": departure.strftime("%H:%M"),
                 "arrival": arrival_text,
+                "trip_minutes": trip_minutes,
                 "rows": [],
                 "maps_url": build_maps_url(base_address, [s.address for s in trip_stops]),
                 "embed_url": build_embed_url(base_address, [s.address for s in trip_stops]),
@@ -680,6 +699,11 @@ def build_route(target_date, config, events, geocode_enabled=True):
                 to_minutes = leg_minutes[idx + 1]
                 from_text = f"{prev_label}から約{round(from_minutes)}分" if from_minutes is not None else "-"
                 to_text = f"{next_label}まで約{round(to_minutes)}分" if to_minutes is not None else "-"
+                arrival_minutes = cumulative_minutes[idx]
+                if arrival_minutes is not None:
+                    arrival_time_text = (departure + datetime.timedelta(minutes=arrival_minutes)).strftime("%H:%M")
+                else:
+                    arrival_time_text = "-"
                 trip["rows"].append(
                     {
                         "name": stop.name,
@@ -688,6 +712,8 @@ def build_route(target_date, config, events, geocode_enabled=True):
                         "crate": size,
                         "from": from_text,
                         "next": to_text,
+                        "arrival_minutes": arrival_minutes,
+                        "arrival_time": arrival_time_text,
                     }
                 )
             trips_data.append(trip)
@@ -711,17 +737,25 @@ def render_html(target_date, base_address, trips_data):
         "background:#1a73e8;color:#fff;text-decoration:none;border-radius:4px;}"
         ".map-embed{width:100%;height:400px;border:0;margin-top:8px;}"
         ".departure{font-size:1.1em;font-weight:bold;color:#1a73e8;margin:4px 0;}"
+        ".departure input{font-size:1em;font-weight:bold;color:#1a73e8;"
+        "border:1px solid #1a73e8;border-radius:4px;padding:2px 4px;}"
         ".capacity-note{color:#555;margin:4px 0;}"
         "</style></head><body>"
     )
     parts.append(f"<h1>送迎ルート {target_date.isoformat()}</h1>")
     parts.append(f"<p class='meta'>拠点: {base_address}</p>")
+    parts.append(
+        "<p class='meta'>出発時刻は下の入力欄で変更できます。"
+        "変更すると、到着予定・帰着予定が自動で再計算されます(あくまで目安です)。</p>"
+    )
 
+    trip_idx = 0
     for trip in trips_data:
         if trip["rows"] is None:
             parts.append(f"<h2>{trip['label']}</h2><p>対象なし</p>")
             continue
 
+        trip_idx += 1
         size_text = "・".join(
             f"{size}{trip['size_counts'][size]}個"
             for size in CRATE_SIZE_ORDER
@@ -733,24 +767,61 @@ def render_html(target_date, base_address, trips_data):
             if trip["remaining_counts"].get(size)
         )
         parts.append(f"<h2>{trip['label']} 第{trip['trip_no']}便</h2>")
-        parts.append(f"<p class='departure'>出発時刻: {trip['departure']}</p>")
-        parts.append(f"<p class='departure'>帰着予定: {trip['arrival']}</p>")
+        parts.append(
+            "<p class='departure'>出発時刻: "
+            f"<input type='time' id='dep-{trip_idx}' value='{trip['departure']}' "
+            f"oninput='recalcTrip({trip_idx})'></p>"
+        )
+        parts.append(
+            f"<p class='departure'>帰着予定: <span data-trip='{trip_idx}' "
+            f"data-min='{trip['trip_minutes'] if trip['trip_minutes'] is not None else ''}' "
+            f"data-suffix=' 頃 (目安)'>{trip['arrival']}</span></p>"
+        )
         parts.append(f"<p class='capacity-note'>積載: {size_text}</p>")
         if remaining_text:
             parts.append(f"<p class='capacity-note'>あとまだ積めます: {remaining_text}</p>")
         else:
             parts.append("<p class='capacity-note'>満載です</p>")
-        parts.append("<table><tr><th>順番</th><th>名前</th><th>住所</th><th>希望時刻</th><th>クレート</th><th>ここまで</th><th>次まで</th></tr>")
-        parts.append(f"<tr><td>出発</td><td colspan='2'>{base_address}</td><td>{trip['departure']}</td><td>-</td><td>-</td><td>-</td></tr>")
+        parts.append("<table><tr><th>順番</th><th>名前</th><th>住所</th><th>希望時刻</th><th>クレート</th><th>到着予定</th><th>ここまで</th><th>次まで</th></tr>")
+        parts.append(f"<tr><td>出発</td><td colspan='2'>{base_address}</td><td>{trip['departure']}</td><td>-</td><td>-</td><td>-</td><td>-</td></tr>")
         for i, row in enumerate(trip["rows"], start=1):
+            arrival_min = row["arrival_minutes"]
+            data_min = f"{arrival_min}" if arrival_min is not None else ""
             parts.append(
                 f"<tr><td>{i}</td><td>{row['name']}</td><td>{row['address']}</td>"
-                f"<td>{row['time']}</td><td>{row['crate']}</td><td>{row['from']}</td><td>{row['next']}</td></tr>"
+                f"<td>{row['time']}</td><td>{row['crate']}</td>"
+                f"<td data-trip='{trip_idx}' data-min='{data_min}' data-suffix=''>{row['arrival_time']}</td>"
+                f"<td>{row['from']}</td><td>{row['next']}</td></tr>"
             )
-        parts.append(f"<tr><td>帰着</td><td colspan='2'>{base_address}</td><td>{trip['arrival']}</td><td>-</td><td>-</td><td>-</td></tr>")
+        parts.append(
+            f"<tr><td>帰着</td><td colspan='2'>{base_address}</td><td>{trip['arrival']}</td>"
+            f"<td data-trip='{trip_idx}' data-min='{trip['trip_minutes'] if trip['trip_minutes'] is not None else ''}' "
+            f"data-suffix=' 頃 (目安)'>{trip['arrival']}</td><td>-</td><td>-</td></tr>"
+        )
         parts.append("</table>")
         parts.append(f"<a class='maps-link' href='{trip['maps_url']}' target='_blank'>Googleマップでルートを開く</a>")
         parts.append(f"<iframe class='map-embed' src='{trip['embed_url']}' loading='lazy'></iframe>")
+
+    parts.append(
+        "<script>"
+        "function recalcTrip(tripIdx){"
+        "var inp=document.getElementById('dep-'+tripIdx);"
+        "var p=inp.value.split(':');"
+        "var base=parseInt(p[0],10)*60+parseInt(p[1],10);"
+        "var cells=document.querySelectorAll('[data-trip=\"'+tripIdx+'\"]');"
+        "cells.forEach(function(cell){"
+        "var min=cell.getAttribute('data-min');"
+        "if(min===null||min===''){cell.textContent='-';return;}"
+        "var total=Math.round(base+parseFloat(min));"
+        "total=((total%1440)+1440)%1440;"
+        "var h=Math.floor(total/60);var m=total%60;"
+        "var hh=(h<10?'0':'')+h;var mm=(m<10?'0':'')+m;"
+        "var suffix=cell.getAttribute('data-suffix')||'';"
+        "cell.textContent=hh+':'+mm+suffix;"
+        "});"
+        "}"
+        "</script>"
+    )
 
     parts.append("</body></html>")
     return "".join(parts)
