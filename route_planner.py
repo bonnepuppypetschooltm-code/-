@@ -662,23 +662,27 @@ def build_route(target_date, config, events, geocode_enabled=True):
 
             requested_times = [s.requested_time for s in trip_stops if s.requested_time]
             if requested_times:
+                # 時刻指定があるお宅(基準のお宅)に間に合うよう、そこまでの移動時間を
+                # 逆算して出発時刻を決める。
+                # 朝のお迎え便: 並び順の都合上、最初に時刻指定があるお宅が
+                #   一番早い希望時刻になる(基準のお宅)
+                # 夕方の送り便: 並び順の都合上、最後に時刻指定があるお宅が
+                #   一番遅い希望時刻になる(基準のお宅)
                 if default_is_arrival_target:
-                    # 夕方の送り便: 並び順の都合上、最後に時刻指定があるお宅が
-                    # 一番遅い希望時刻になる。そのお宅に間に合うよう、
-                    # そこまでの移動時間を逆算して出発時刻を決める
                     anchor_idx = max(
                         idx for idx, s in enumerate(trip_stops) if s.requested_time is not None
                     )
-                    anchor_time = trip_stops[anchor_idx].requested_time
-                    legs_to_anchor = leg_minutes[: anchor_idx + 1]
-                    if all(m is not None for m in legs_to_anchor):
-                        cumulative_to_anchor = sum(legs_to_anchor)
-                        departure = datetime.datetime.combine(
-                            target_date, anchor_time
-                        ) - datetime.timedelta(minutes=cumulative_to_anchor + buffer_minutes)
-                    else:
-                        earliest = datetime.datetime.combine(target_date, min(requested_times))
-                        departure = earliest - datetime.timedelta(minutes=buffer_minutes)
+                else:
+                    anchor_idx = min(
+                        idx for idx, s in enumerate(trip_stops) if s.requested_time is not None
+                    )
+                anchor_time = trip_stops[anchor_idx].requested_time
+                legs_to_anchor = leg_minutes[: anchor_idx + 1]
+                if all(m is not None for m in legs_to_anchor):
+                    cumulative_to_anchor = sum(legs_to_anchor)
+                    departure = datetime.datetime.combine(
+                        target_date, anchor_time
+                    ) - datetime.timedelta(minutes=cumulative_to_anchor + buffer_minutes)
                 else:
                     earliest = datetime.datetime.combine(target_date, min(requested_times))
                     departure = earliest - datetime.timedelta(minutes=buffer_minutes)
