@@ -77,61 +77,68 @@ def format_crate_sizes(sizes, default_crate_size):
     )
 
 
-def render_route_map_svg(map_points):
-    """ルートの地図を、外部の地図タイルやJavaScriptを使わないSVGとして描画する。
+def build_static_map_url(map_points):
+    """実際の地図(OpenStreetMap)上に、番号付きのマーカーとルート線を描いた
+    画像のURLを作成する(APIキー不要のstaticmap.openstreetmap.deを利用)。
 
-    メールのHTML添付をスマホで開いた場合、地図タイルの読み込みや
-    JavaScriptの実行ができないことが多いため、緯度経度から位置関係だけを
-    示す簡易図をSVGで直接埋め込む。
+    メールのHTML添付をスマホで開いた場合、JavaScriptや地図タイルの
+    動的な読み込みができないことが多いが、<img>タグの画像は表示できるため、
+    実際の地図が見られるようにする。
     """
     if not map_points:
-        return ""
+        return None
 
     width, height = 600, 400
-    pad = 30
+    tile_size = 256
 
     lats = [p["lat"] for p in map_points]
     lons = [p["lon"] for p in map_points]
-    avg_lat = sum(lats) / len(lats)
-    lon_factor = math.cos(math.radians(avg_lat))
-
     min_lat, max_lat = min(lats), max(lats)
     min_lon, max_lon = min(lons), max(lons)
-    lat_span = max(max_lat - min_lat, 1e-6)
-    lon_span = max((max_lon - min_lon) * lon_factor, 1e-6)
-    scale = min((width - 2 * pad) / lon_span, (height - 2 * pad) / lat_span)
-
     center_lat = (min_lat + max_lat) / 2
     center_lon = (min_lon + max_lon) / 2
 
-    def project(lat, lon):
-        x = width / 2 + (lon - center_lon) * lon_factor * scale
-        y = height / 2 - (lat - center_lat) * scale
-        return x, y
+    def lat_to_merc_y(lat):
+        lat = max(min(lat, 85.05112878), -85.05112878)
+        sin_lat = math.sin(math.radians(lat))
+        return math.log((1 + sin_lat) / (1 - sin_lat)) / 2
 
-    points_xy = [project(p["lat"], p["lon"]) for p in map_points]
+    lon_span = max(max_lon - min_lon, 1e-9)
+    lat_span = max(lat_to_merc_y(max_lat) - lat_to_merc_y(min_lat), 1e-9)
 
-    parts = [
-        f"<svg viewBox='0 0 {width} {height}' xmlns='http://www.w3.org/2000/svg' "
-        "class='route-map'>"
+    zoom_lon = math.log2(width * 360 / lon_span / tile_size)
+    zoom_lat = math.log2(height * (2 * math.pi) / lat_span / tile_size)
+    # 少し余白を持たせるため1段階小さくする
+    zoom = int(math.floor(min(zoom_lon, zoom_lat))) - 1
+    zoom = max(1, min(zoom, 18))
+
+    colors = ["red", "blue", "green", "orange", "purple", "lightblue", "gray", "brown"]
+    markers = []
+    for p in map_points:
+        if p["label"] == "店":
+            markers.append(f"{p['lat']},{p['lon']},lightblue1")
+        else:
+            try:
+                num = int(p["label"])
+            except ValueError:
+                num = 1
+            color = colors[(num - 1) % len(colors)]
+            num9 = ((num - 1) % 9) + 1
+            markers.append(f"{p['lat']},{p['lon']},{color}{num9}")
+
+    path_points = "|".join(f"{p['lat']},{p['lon']}" for p in map_points)
+
+    params = [
+        ("center", f"{center_lat},{center_lon}"),
+        ("zoom", str(zoom)),
+        ("size", f"{width}x{height}"),
+        ("maptype", "mapnik"),
+        ("path", f"color:0x1a73e8cc|weight:3|{path_points}"),
     ]
-    line_points = " ".join(f"{x:.1f},{y:.1f}" for x, y in points_xy)
-    parts.append(
-        f"<polyline points='{line_points}' fill='none' stroke='#1a73e8' "
-        "stroke-width='3' stroke-opacity='0.6' />"
-    )
-    for (x, y), p in zip(points_xy, map_points):
-        is_store = p["label"] == "店"
-        color = "#d93025" if is_store else "#1a73e8"
-        parts.append(f"<g><title>{p['title']}</title>")
-        parts.append(f"<circle cx='{x:.1f}' cy='{y:.1f}' r='14' fill='{color}' stroke='#fff' stroke-width='2' />")
-        parts.append(
-            f"<text x='{x:.1f}' y='{y:.1f}' text-anchor='middle' dominant-baseline='central' "
-            f"fill='#fff' font-size='13' font-weight='bold' font-family='sans-serif'>{p['label']}</text>"
-        )
-        parts.append("</g>")
-    parts.append("</svg>")
-    return "".join(parts)
+    query = urllib.parse.urlencode(params)
+    marker_query = "&".join(f"markers={urllib.parse.quote(m)}" for m in markers)
+    return f"https://staticmap.openstreetmap.de/staticmap.php?{query}&{marker_query}"
+
 
 GEOCODE_CACHE_FILE = ".geocode_cache.json"
 GEOCODE_URL = "https://msearch.gsi.go.jp/address-search/AddressSearch?q="
@@ -1113,8 +1120,9 @@ def render_html(target_date, base_address, trips_data):
         )
         parts.append("</table>")
         parts.append(f"<a class='maps-link' href='{trip['maps_url']}' target='_blank'>Googleマップでルートを開く</a>")
-        if trip["map_points"]:
-            parts.append(render_route_map_svg(trip["map_points"]))
+        map_url = build_static_map_url(trip["map_points"])
+        if map_url:
+            parts.append(f"<img class='route-map' src='{map_url}' alt='ルート地図' loading='lazy'>")
         else:
             parts.append(f"<iframe class='map-embed' src='{trip['embed_url']}' loading='lazy'></iframe>")
 
