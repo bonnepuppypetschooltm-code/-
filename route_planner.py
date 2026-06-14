@@ -76,6 +76,63 @@ def format_crate_sizes(sizes, default_crate_size):
         f"{size}×{counts[size]}" if counts[size] > 1 else size for size in order
     )
 
+
+def render_route_map_svg(map_points):
+    """ルートの地図を、外部の地図タイルやJavaScriptを使わないSVGとして描画する。
+
+    メールのHTML添付をスマホで開いた場合、地図タイルの読み込みや
+    JavaScriptの実行ができないことが多いため、緯度経度から位置関係だけを
+    示す簡易図をSVGで直接埋め込む。
+    """
+    if not map_points:
+        return ""
+
+    width, height = 600, 400
+    pad = 30
+
+    lats = [p["lat"] for p in map_points]
+    lons = [p["lon"] for p in map_points]
+    avg_lat = sum(lats) / len(lats)
+    lon_factor = math.cos(math.radians(avg_lat))
+
+    min_lat, max_lat = min(lats), max(lats)
+    min_lon, max_lon = min(lons), max(lons)
+    lat_span = max(max_lat - min_lat, 1e-6)
+    lon_span = max((max_lon - min_lon) * lon_factor, 1e-6)
+    scale = min((width - 2 * pad) / lon_span, (height - 2 * pad) / lat_span)
+
+    center_lat = (min_lat + max_lat) / 2
+    center_lon = (min_lon + max_lon) / 2
+
+    def project(lat, lon):
+        x = width / 2 + (lon - center_lon) * lon_factor * scale
+        y = height / 2 - (lat - center_lat) * scale
+        return x, y
+
+    points_xy = [project(p["lat"], p["lon"]) for p in map_points]
+
+    parts = [
+        f"<svg viewBox='0 0 {width} {height}' xmlns='http://www.w3.org/2000/svg' "
+        "class='route-map'>"
+    ]
+    line_points = " ".join(f"{x:.1f},{y:.1f}" for x, y in points_xy)
+    parts.append(
+        f"<polyline points='{line_points}' fill='none' stroke='#1a73e8' "
+        "stroke-width='3' stroke-opacity='0.6' />"
+    )
+    for (x, y), p in zip(points_xy, map_points):
+        is_store = p["label"] == "店"
+        color = "#d93025" if is_store else "#1a73e8"
+        parts.append(f"<g><title>{p['title']}</title>")
+        parts.append(f"<circle cx='{x:.1f}' cy='{y:.1f}' r='14' fill='{color}' stroke='#fff' stroke-width='2' />")
+        parts.append(
+            f"<text x='{x:.1f}' y='{y:.1f}' text-anchor='middle' dominant-baseline='central' "
+            f"fill='#fff' font-size='13' font-weight='bold' font-family='sans-serif'>{p['label']}</text>"
+        )
+        parts.append("</g>")
+    parts.append("</svg>")
+    return "".join(parts)
+
 GEOCODE_CACHE_FILE = ".geocode_cache.json"
 GEOCODE_URL = "https://msearch.gsi.go.jp/address-search/AddressSearch?q="
 
@@ -967,10 +1024,6 @@ def render_html(target_date, base_address, trips_data):
     parts.append("<!DOCTYPE html><html lang='ja'><head><meta charset='utf-8'>")
     parts.append(f"<title>送迎ルート {target_date.isoformat()}</title>")
     parts.append(
-        "<link rel='stylesheet' href='https://unpkg.com/leaflet@1.9.4/dist/leaflet.css' />"
-        "<script src='https://unpkg.com/leaflet@1.9.4/dist/leaflet.js'></script>"
-    )
-    parts.append(
         "<style>"
         "body{font-family:sans-serif;margin:20px;}"
         "h1{font-size:1.4em;} h2{margin-top:2em;border-bottom:2px solid #888;padding-bottom:4px;}"
@@ -981,11 +1034,7 @@ def render_html(target_date, base_address, trips_data):
         ".maps-link{display:inline-block;margin-top:8px;padding:6px 12px;"
         "background:#1a73e8;color:#fff;text-decoration:none;border-radius:4px;}"
         ".map-embed{width:100%;height:400px;border:0;margin-top:8px;}"
-        ".route-map{width:100%;height:400px;margin-top:8px;border:1px solid #ccc;}"
-        ".num-marker{background:#1a73e8;color:#fff;border-radius:50%;width:28px;height:28px;"
-        "display:flex;align-items:center;justify-content:center;font-weight:bold;font-size:14px;"
-        "border:2px solid #fff;box-shadow:0 1px 3px rgba(0,0,0,.5);}"
-        ".num-marker.store{background:#d93025;}"
+        ".route-map{width:100%;height:auto;margin-top:8px;border:1px solid #ccc;background:#eef3f8;}"
         ".departure{font-size:1.1em;font-weight:bold;color:#1a73e8;margin:4px 0;}"
         ".departure input{font-size:1em;font-weight:bold;color:#1a73e8;"
         "border:1px solid #1a73e8;border-radius:4px;padding:2px 4px;}"
@@ -998,8 +1047,6 @@ def render_html(target_date, base_address, trips_data):
         "<p class='meta'>出発時刻は下の入力欄で変更できます。"
         "変更すると、到着予定・帰着予定が自動で再計算されます(あくまで目安です)。</p>"
     )
-
-    parts.append("<script>var routeMaps=[];</script>")
 
     trip_idx = 0
     for trip in trips_data:
@@ -1067,11 +1114,7 @@ def render_html(target_date, base_address, trips_data):
         parts.append("</table>")
         parts.append(f"<a class='maps-link' href='{trip['maps_url']}' target='_blank'>Googleマップでルートを開く</a>")
         if trip["map_points"]:
-            parts.append(f"<div id='route-map-{trip_idx}' class='route-map'></div>")
-            parts.append(
-                f"<script>routeMaps.push({{id:'route-map-{trip_idx}',"
-                f"points:{json.dumps(trip['map_points'], ensure_ascii=False)}}});</script>"
-            )
+            parts.append(render_route_map_svg(trip["map_points"]))
         else:
             parts.append(f"<iframe class='map-embed' src='{trip['embed_url']}' loading='lazy'></iframe>")
 
@@ -1111,24 +1154,6 @@ def render_html(target_date, base_address, trips_data):
         "dep.value=minutesToTime(timeToMinutes(arr.value)-parseFloat(tripMin));"
         "recalcFromDeparture(tripIdx);"
         "}"
-        "routeMaps.forEach(function(rm){"
-        "var map=L.map(rm.id);"
-        "L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{"
-        "attribution:'&copy; OpenStreetMap contributors',maxZoom:19"
-        "}).addTo(map);"
-        "var latlngs=[];"
-        "rm.points.forEach(function(p){"
-        "var isStore=(p.label==='店');"
-        "var icon=L.divIcon({"
-        "className:'num-marker'+(isStore?' store':''),"
-        "html:p.label,iconSize:[28,28],iconAnchor:[14,14]"
-        "});"
-        "L.marker([p.lat,p.lon],{icon:icon}).addTo(map).bindTooltip(p.title);"
-        "latlngs.push([p.lat,p.lon]);"
-        "});"
-        "L.polyline(latlngs,{color:'#1a73e8',weight:3,opacity:0.7}).addTo(map);"
-        "map.fitBounds(latlngs,{padding:[20,20]});"
-        "});"
         "</script>"
     )
 
