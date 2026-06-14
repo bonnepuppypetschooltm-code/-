@@ -257,8 +257,51 @@ python route_planner.py --date 2026-06-15
 - 出力先を変えたい場合: `--output 保存先.html`
 - ブラウザで自動的に開かないようにする場合: `--no-open`
 
+## メールへの自動送信
+
+`config.yaml` に以下を設定すると、実行時に作成したルートのHTMLファイルが
+メールに添付されて自動送信されます。
+
+```yaml
+email_from: "送信元のGmailアドレス"
+email_app_password: "Googleアカウントで発行したアプリパスワード(16桁)"
+email_to: "送信先のメールアドレス"
+```
+
+### アプリパスワードの取得方法 (無料・5分程度)
+
+1. 送信元にしたいGmailアカウントで2段階認証を有効にする
+   (まだの場合は [https://myaccount.google.com/security](https://myaccount.google.com/security) で設定)
+2. [https://myaccount.google.com/apppasswords](https://myaccount.google.com/apppasswords) を開く
+3. アプリ名を適当に入力(例: 送迎ルート)して「作成」
+4. 表示された16桁のパスワードを `config.yaml` の `email_app_password` にコピー
+   (スペースは入れても入れなくてもどちらでも動きます)
+
+- 通知を送りたくない場合: `--no-email`
+- 複数人に送りたい場合: `email_to: ["宛先1@example.com", "宛先2@example.com"]`
+
+## 毎朝自動で実行する (Windowsタスクスケジューラ)
+
+毎朝決まった時間に自動でルートを作成・メール送信するように設定できます。
+
+1. メモ帳などで `daily_route.bat` というファイルを作成し、以下を保存
+   (パスはご自身の作業フォルダに置き換えてください)
+
+   ```bat
+   cd /d "C:\Users\bonnepuppy天満店\Downloads\..."
+   python route_planner.py --no-open
+   ```
+
+2. Windowsの「タスクスケジューラ」を開く(スタートメニューで検索)
+3. 「タスクの作成」→「トリガー」タブで「毎日 8:00」など好きな時刻を設定
+4. 「操作」タブで、作成した `daily_route.bat` を指定
+5. 「条件」タブで「AC電源で動作している場合のみ実行する」のチェックを外す
+   (ノートパソコンでバッテリー駆動でも実行されるようにする場合)
+
+これで、パソコンの電源が入っていれば毎朝自動でルートが作成され、メールが送信されます。
+
 ## 今後の拡張案
 
 - 複数台の車・複数ドライバーへの自動振り分け
 - 渋滞状況を考慮したリアルタイム再計算
-- LINE / Slack への自動通知
+- LINEへの自動通知

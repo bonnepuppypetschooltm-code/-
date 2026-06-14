@@ -59,3 +59,9 @@ calendar_id: "primary"
 # Google API 認証情報ファイルのパス
 google_oauth_client_secret_file: "credentials.json"
 google_oauth_token_file: "token.json"
+
+# 完成したルートをメールで自動送信する場合に設定 (Gmailのアプリパスワードを使用)
+# 設定しない場合はこの3行を削除してください (メール送信は行われません)
+# email_from: "送信元のGmailアドレス"
+# email_app_password: "Googleアカウントで発行したアプリパスワード(16桁)"
+# email_to: "送信先のメールアドレス"  # 複数宛てに送る場合は ["宛先1", "宛先2"] のように書く

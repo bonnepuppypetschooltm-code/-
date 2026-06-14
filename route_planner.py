@@ -20,6 +20,7 @@ import json
 import math
 import os
 import re
+import smtplib
 import sys
 import unicodedata
 import urllib.parse
@@ -636,6 +637,37 @@ def build_embed_url(base_address, stop_addresses):
     return f"https://maps.google.com/maps?saddr={saddr}&daddr={daddr}&output=embed"
 
 
+def send_route_email(config, target_date, html, output_path):
+    """作成したルートHTMLを、メールに添付して送信する (Gmailのアプリパスワードを使用)"""
+    import mimetypes
+    from email.message import EmailMessage
+
+    gmail_address = config["email_from"]
+    app_password = config["email_app_password"]
+    to_addrs = config["email_to"]
+    if isinstance(to_addrs, str):
+        to_addrs = [to_addrs]
+
+    msg = EmailMessage()
+    msg["Subject"] = f"【送迎ルート】{target_date.isoformat()}"
+    msg["From"] = gmail_address
+    msg["To"] = ", ".join(to_addrs)
+    msg.set_content(
+        f"{target_date.isoformat()} の送迎ルートです。\n"
+        "添付のファイルを開いて確認してください。"
+    )
+    msg.add_attachment(
+        html.encode("utf-8"),
+        maintype="text",
+        subtype="html",
+        filename=os.path.basename(output_path),
+    )
+
+    with smtplib.SMTP_SSL("smtp.gmail.com", 465) as smtp:
+        smtp.login(gmail_address, app_password)
+        smtp.send_message(msg)
+
+
 def main():
     parser = argparse.ArgumentParser(description="犬の幼稚園 送迎ルート自動作成")
     parser.add_argument("--config", default="config.yaml", help="設定ファイルのパス")
@@ -658,6 +690,11 @@ def main():
         "--no-open",
         action="store_true",
         help="作成後にブラウザで自動的に開かない",
+    )
+    parser.add_argument(
+        "--no-email",
+        action="store_true",
+        help="config.yamlにメール設定があってもメールを送らない",
     )
     parser.add_argument(
         "--set-travel-time",
@@ -736,6 +773,13 @@ def main():
         f.write(html)
 
     print(f"作成しました: {os.path.abspath(output_path)}")
+
+    if config.get("email_to") and not args.no_email:
+        try:
+            send_route_email(config, target_date, html, output_path)
+            print(f"メールを送信しました: {config['email_to']}")
+        except Exception as e:
+            print(f"警告: メールの送信に失敗しました: {e}", file=sys.stderr)
 
     if not args.no_open:
         import webbrowser
