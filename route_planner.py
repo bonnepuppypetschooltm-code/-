@@ -44,26 +44,58 @@ DAY_PATTERN = re.compile(r"\((\d+)/(\d+)日目\)")
 # 「特大」は「大」の部分文字列を含むため、長い名前から先に判定する
 CRATE_SIZE_ORDER = ["特大", "大", "中", "小"]
 
+
+def parse_crate_sizes(tag_text):
+    """タグ内のクレートサイズ表記をすべて取り出す。
+
+    「中」「中×2」「中2」「中 中」のように、1頭ずつ複数のクレートを
+    指定した場合もそれぞれ1つずつのサイズとしてリストで返す。
+    """
+    sizes = []
+    remaining = tag_text
+    for size in CRATE_SIZE_ORDER:
+        pattern = re.compile(re.escape(size) + r"\s*[×xX]?\s*(\d*)")
+        for m in pattern.finditer(remaining):
+            count = int(m.group(1)) if m.group(1) else 1
+            sizes.extend([size] * count)
+        remaining = pattern.sub("", remaining)
+    return sizes
+
+
+def format_crate_sizes(sizes, default_crate_size):
+    """クレートサイズのリストを「中×2」「大+中」のような表示用文字列にする。"""
+    if not sizes:
+        return f"{default_crate_size}(既定)"
+    counts = {}
+    order = []
+    for size in sizes:
+        if size not in counts:
+            order.append(size)
+        counts[size] = counts.get(size, 0) + 1
+    return "+".join(
+        f"{size}×{counts[size]}" if counts[size] > 1 else size for size in order
+    )
+
 GEOCODE_CACHE_FILE = ".geocode_cache.json"
 GEOCODE_URL = "https://msearch.gsi.go.jp/address-search/AddressSearch?q="
 
 
 class Stop:
-    def __init__(self, name, address, requested_time=None, crate_size=None, requested_time_type="by"):
+    def __init__(self, name, address, requested_time=None, crate_sizes=None, requested_time_type="by"):
         self.name = name
         self.address = address
         self.requested_time = requested_time
         # "by": その時刻までに到着 (まで、または指定なし)
         # "after": その時刻以降に到着 (以降)
         self.requested_time_type = requested_time_type
-        self.crate_size = crate_size
+        self.crate_sizes = crate_sizes or []
         self.distance_from_base = None
         self.coords = None
 
     def __repr__(self):
         t = self.requested_time.strftime("%H:%M") if self.requested_time else "-"
         suffix = {"by": "まで", "after": "以降"}.get(self.requested_time_type, "")
-        return f"{self.name} ({self.address}) [指定: {t}{suffix if self.requested_time else ''}, クレート: {self.crate_size}]"
+        return f"{self.name} ({self.address}) [指定: {t}{suffix if self.requested_time else ''}, クレート: {self.crate_sizes}]"
 
 
 def crate_units(crate_capacity):
@@ -515,11 +547,7 @@ def classify_stop(name, tag_text, location, day_info=None):
         elif dropoff_time is None:
             dropoff_time, dropoff_time_type = unlabeled_times[0]
 
-    crate_size = None
-    for size in CRATE_SIZE_ORDER:
-        if size in tag_text:
-            crate_size = size
-            break
+    crate_sizes = parse_crate_sizes(tag_text)
 
     pickup_stop = None
     dropoff_stop = None
@@ -533,17 +561,17 @@ def classify_stop(name, tag_text, location, day_info=None):
                 return None, None
             if day_num == 1:
                 if is_roundtrip or has_pickup_tag:
-                    pickup_stop = Stop(name, location, pickup_time, crate_size, pickup_time_type)
+                    pickup_stop = Stop(name, location, pickup_time, crate_sizes, pickup_time_type)
                 return pickup_stop, None
             if day_num == total_days:
                 if is_roundtrip or has_dropoff_tag:
-                    dropoff_stop = Stop(name, location, dropoff_time, crate_size, dropoff_time_type)
+                    dropoff_stop = Stop(name, location, dropoff_time, crate_sizes, dropoff_time_type)
                 return None, dropoff_stop
 
     if is_roundtrip or has_pickup_tag:
-        pickup_stop = Stop(name, location, pickup_time, crate_size, pickup_time_type)
+        pickup_stop = Stop(name, location, pickup_time, crate_sizes, pickup_time_type)
     if is_roundtrip or has_dropoff_tag:
-        dropoff_stop = Stop(name, location, dropoff_time, crate_size, dropoff_time_type)
+        dropoff_stop = Stop(name, location, dropoff_time, crate_sizes, dropoff_time_type)
 
     return pickup_stop, dropoff_stop
 
@@ -580,8 +608,8 @@ def split_into_trips(stops, capacity_units, crate_weights, default_crate_size, t
     current_units = 0
     last_requested_time = None
     for stop in sorted_stops:
-        size = stop.crate_size or default_crate_size
-        units = crate_weights.get(size, crate_weights[default_crate_size])
+        sizes = stop.crate_sizes or [default_crate_size]
+        units = sum(crate_weights.get(size, crate_weights[default_crate_size]) for size in sizes)
         split_for_capacity = current and current_units + units > capacity_units
         split_for_time_gap = (
             time_gap_split_minutes is not None
@@ -841,9 +869,10 @@ def build_route(target_date, config, events, geocode_enabled=True):
             size_counts = {}
             loaded_units = 0
             for stop in trip_stops:
-                size = stop.crate_size or default_crate_size
-                size_counts[size] = size_counts.get(size, 0) + 1
-                loaded_units += crate_weights.get(size, crate_weights[default_crate_size])
+                sizes = stop.crate_sizes or [default_crate_size]
+                for size in sizes:
+                    size_counts[size] = size_counts.get(size, 0) + 1
+                    loaded_units += crate_weights.get(size, crate_weights[default_crate_size])
 
             remaining_units = capacity_units - loaded_units
             remaining_counts = {
@@ -904,7 +933,7 @@ def build_route(target_date, config, events, geocode_enabled=True):
                     t = stop.requested_time.strftime("%H:%M") + suffix
                 else:
                     t = "-"
-                size = stop.crate_size or f"{default_crate_size}(既定)"
+                size = format_crate_sizes(stop.crate_sizes, default_crate_size)
                 prev_label = trip_stops[idx - 1].name if idx > 0 else "店舗"
                 next_label = trip_stops[idx + 1].name if idx + 1 < len(trip_stops) else "店舗"
                 from_minutes = leg_minutes[idx]
