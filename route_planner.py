@@ -77,61 +77,6 @@ def format_crate_sizes(sizes, default_crate_size):
     )
 
 
-def render_route_map_svg(map_points):
-    """地図画像が取得できなかった場合のフォールバック。
-
-    外部の地図タイルやJavaScriptを使わず、緯度経度から位置関係だけを
-    示す簡易図をSVGで直接埋め込む(ネット接続なしでも表示できる)。
-    """
-    if not map_points:
-        return ""
-
-    width, height = 600, 400
-    pad = 30
-
-    lats = [p["lat"] for p in map_points]
-    lons = [p["lon"] for p in map_points]
-    avg_lat = sum(lats) / len(lats)
-    lon_factor = math.cos(math.radians(avg_lat))
-
-    min_lat, max_lat = min(lats), max(lats)
-    min_lon, max_lon = min(lons), max(lons)
-    lat_span = max(max_lat - min_lat, 1e-6)
-    lon_span = max((max_lon - min_lon) * lon_factor, 1e-6)
-    scale = min((width - 2 * pad) / lon_span, (height - 2 * pad) / lat_span)
-
-    center_lat = (min_lat + max_lat) / 2
-    center_lon = (min_lon + max_lon) / 2
-
-    def project(lat, lon):
-        x = width / 2 + (lon - center_lon) * lon_factor * scale
-        y = height / 2 - (lat - center_lat) * scale
-        return x, y
-
-    points_xy = [project(p["lat"], p["lon"]) for p in map_points]
-
-    parts = [
-        f"<svg viewBox='0 0 {width} {height}' xmlns='http://www.w3.org/2000/svg' "
-        "class='route-map'>"
-    ]
-    line_points = " ".join(f"{x:.1f},{y:.1f}" for x, y in points_xy)
-    parts.append(
-        f"<polyline points='{line_points}' fill='none' stroke='#1a73e8' "
-        "stroke-width='3' stroke-opacity='0.6' />"
-    )
-    for (x, y), p in zip(points_xy, map_points):
-        is_store = p["label"] == "店"
-        color = "#d93025" if is_store else "#1a73e8"
-        parts.append(f"<g><title>{p['title']}</title>")
-        parts.append(f"<circle cx='{x:.1f}' cy='{y:.1f}' r='14' fill='{color}' stroke='#fff' stroke-width='2' />")
-        parts.append(
-            f"<text x='{x:.1f}' y='{y:.1f}' text-anchor='middle' dominant-baseline='central' "
-            f"fill='#fff' font-size='13' font-weight='bold' font-family='sans-serif'>{p['label']}</text>"
-        )
-        parts.append("</g>")
-    parts.append("</svg>")
-    return "".join(parts)
-
 
 GEOCODE_CACHE_FILE = ".geocode_cache.json"
 GEOCODE_URL = "https://msearch.gsi.go.jp/address-search/AddressSearch?q="
@@ -989,15 +934,6 @@ def build_route(target_date, config, events, geocode_enabled=True):
             else:
                 arrival_text = "-"
 
-            map_points = []
-            if start_coords:
-                map_points.append({"lat": start_coords[0], "lon": start_coords[1], "label": start_short, "title": start_name})
-            for idx, stop in enumerate(trip_stops, start=1):
-                if stop.coords:
-                    map_points.append({"lat": stop.coords[0], "lon": stop.coords[1], "label": str(idx), "title": stop.name})
-            if end_coords:
-                map_points.append({"lat": end_coords[0], "lon": end_coords[1], "label": end_short, "title": end_name})
-
             trip = {
                 "label": label,
                 "trip_no": i,
@@ -1011,7 +947,6 @@ def build_route(target_date, config, events, geocode_enabled=True):
                 "end_name": end_name,
                 "maps_url": build_maps_url(start_address, end_address, [s.address for s in trip_stops]),
                 "embed_url": build_embed_url(start_address, end_address, [s.address for s in trip_stops]),
-                "map_points": map_points,
             }
             for idx, stop in enumerate(trip_stops):
                 if stop.requested_time:
@@ -1069,7 +1004,6 @@ def render_html(target_date, locations, trips_data):
         ".maps-link{display:inline-block;margin-top:8px;padding:6px 12px;"
         "background:#1a73e8;color:#fff;text-decoration:none;border-radius:4px;}"
         ".map-embed{width:100%;height:400px;border:0;margin-top:8px;}"
-        ".route-map{width:100%;height:auto;margin-top:8px;border:1px solid #ccc;background:#eef3f8;}"
         ".departure{font-size:1.1em;font-weight:bold;color:#1a73e8;margin:4px 0;}"
         ".departure input{font-size:1em;font-weight:bold;color:#1a73e8;"
         "border:1px solid #1a73e8;border-radius:4px;padding:2px 4px;}"
@@ -1159,10 +1093,7 @@ def render_html(target_date, locations, trips_data):
         )
         parts.append("</table>")
         parts.append(f"<a class='maps-link' href='{trip['maps_url']}' target='_blank'>Googleマップでルートを開く</a>")
-        if trip["map_points"]:
-            parts.append(render_route_map_svg(trip["map_points"]))
-        else:
-            parts.append(f"<iframe class='map-embed' src='{trip['embed_url']}' loading='lazy'></iframe>")
+        parts.append(f"<iframe class='map-embed' src='{trip['embed_url']}' loading='lazy'></iframe>")
 
     parts.append(
         "<script>"
