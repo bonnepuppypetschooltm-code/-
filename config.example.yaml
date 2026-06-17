@@ -67,6 +67,11 @@ calendar_id: "primary"
 google_oauth_client_secret_file: "credentials.json"
 google_oauth_token_file: "token.json"
 
+# 画面に表示する地図に、番号付きマーカー(①②③など)を出すための
+# Google Maps Static API のAPIキー (取得方法はREADME参照)
+# 設定しない場合は、番号は出ないが本物のGoogleマップが画面に表示されます
+# google_maps_api_key: "ここにAPIキーを貼る"
+
 # 完成したルートをメールで自動送信する場合に設定 (Gmailのアプリパスワードを使用)
 # 設定しない場合はこの3行を削除してください (メール送信は行われません)
 # email_from: "送信元のGmailアドレス"

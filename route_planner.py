@@ -78,68 +78,40 @@ def format_crate_sizes(sizes, default_crate_size):
     )
 
 
-def build_static_map_url(map_points):
-    """実際の地図(OpenStreetMap)上に、番号付きのマーカーとルート線を描いた
-    画像のURLを作成する(APIキー不要のstaticmap.openstreetmap.deを利用)。
+def build_static_map_url(map_points, api_key):
+    """実際の地図(Google Maps)上に、番号付きのマーカーとルート線を描いた
+    画像のURLを作成する(Google Maps Static APIを利用、APIキーが必要)。
 
     お宅が増えても、どのマーカーがどのお宅かを番号で区別できるようにする。
     """
-    if not map_points:
+    if not map_points or not api_key:
         return None
 
-    width, height = 600, 400
-    tile_size = 256
+    label_chars = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ"
 
-    lats = [p["lat"] for p in map_points]
-    lons = [p["lon"] for p in map_points]
-    min_lat, max_lat = min(lats), max(lats)
-    min_lon, max_lon = min(lons), max(lons)
-    center_lat = (min_lat + max_lat) / 2
-    center_lon = (min_lon + max_lon) / 2
-
-    def lat_to_merc_y(lat):
-        lat = max(min(lat, 85.05112878), -85.05112878)
-        sin_lat = math.sin(math.radians(lat))
-        return math.log((1 + sin_lat) / (1 - sin_lat)) / 2
-
-    lon_span = max(max_lon - min_lon, 1e-9)
-    lat_span = max(lat_to_merc_y(max_lat) - lat_to_merc_y(min_lat), 1e-9)
-
-    zoom_lon = math.log2(width * 360 / lon_span / tile_size)
-    zoom_lat = math.log2(height * (2 * math.pi) / lat_span / tile_size)
-    # 少し余白を持たせるため1段階小さくする
-    zoom = int(math.floor(min(zoom_lon, zoom_lat))) - 1
-    zoom = max(1, min(zoom, 18))
-
-    colors = ["red", "blue", "green", "orange", "purple", "lightblue", "gray", "brown"]
-    markers = []
+    path_points = "|".join(f"{p['lat']},{p['lon']}" for p in map_points)
+    params = [
+        ("size", "600x400"),
+        ("path", f"color:0x1a73e8cc|weight:3|{path_points}"),
+    ]
     for p in map_points:
         if p["label"] in ("店", "P"):
-            markers.append(f"{p['lat']},{p['lon']},lightblue1")
+            label = "P" if p["label"] == "P" else "S"
+            color = "0x4285f4"
         else:
             try:
                 num = int(p["label"])
             except ValueError:
                 num = 1
-            color = colors[(num - 1) % len(colors)]
-            num9 = ((num - 1) % 9) + 1
-            markers.append(f"{p['lat']},{p['lon']},{color}{num9}")
-
-    path_points = "|".join(f"{p['lat']},{p['lon']}" for p in map_points)
-
-    params = [
-        ("center", f"{center_lat},{center_lon}"),
-        ("zoom", str(zoom)),
-        ("size", f"{width}x{height}"),
-        ("maptype", "mapnik"),
-        ("path", f"color:0x1a73e8cc|weight:3|{path_points}"),
-    ]
-    query = urllib.parse.urlencode(params)
-    marker_query = "&".join(f"markers={urllib.parse.quote(m)}" for m in markers)
-    return f"https://staticmap.openstreetmap.de/staticmap.php?{query}&{marker_query}"
+            label = label_chars[num % len(label_chars)]
+            color = "0xea4335"
+        params.append(("markers", f"color:{color}|label:{label}|{p['lat']},{p['lon']}"))
+    params.append(("key", api_key))
+    query = "&".join(f"{k}={urllib.parse.quote(str(v), safe=':,|')}" for k, v in params)
+    return f"https://maps.googleapis.com/maps/api/staticmap?{query}"
 
 
-def fetch_static_map_data_uri(map_points, timeout=10, retries=2):
+def fetch_static_map_data_uri(map_points, api_key, timeout=10, retries=2):
     """地図画像をルート作成時にダウンロードし、HTMLに直接埋め込めるbase64形式にする。
 
     メールで届いたHTMLをスマホで開く時点ではネット接続やJavaScriptの実行が
@@ -147,9 +119,8 @@ def fetch_static_map_data_uri(map_points, timeout=10, retries=2):
     画像が表示されない。あらかじめパソコン側(ルート作成時)で画像データを
     取得し、HTMLファイルの中に埋め込んでおくことで、スマホ側はネット接続なしで
     画像を表示できるようにする。
-    外部サービスが不安定なことがあるため、失敗時は何度か再試行する。
     """
-    url = build_static_map_url(map_points)
+    url = build_static_map_url(map_points, api_key)
     if not url:
         return None
     last_error = None
@@ -159,9 +130,8 @@ def fetch_static_map_data_uri(map_points, timeout=10, retries=2):
             with urllib.request.urlopen(req, timeout=timeout) as resp:
                 data = resp.read()
                 content_type = resp.headers.get_content_type() or "image/png"
-            # 極端に小さいデータはエラー画像の可能性が高いので失敗扱いにする
             if len(data) < 1000:
-                last_error = "image too small"
+                last_error = "image too small (APIキーやエラー画像の可能性)"
                 continue
             encoded = base64.b64encode(data).decode("ascii")
             return f"data:{content_type};base64,{encoded}"
@@ -456,6 +426,7 @@ DEFAULT_CONFIG = {
     "base_name": "天満店",
     "parking_address": None,
     "parking_name": "駐車場",
+    "google_maps_api_key": None,
     "crate_capacity": {"特大": 2, "大": 4, "中": 9, "小": 12},
     "default_crate_size": "中",
     "morning_start_time": "08:30",
@@ -904,7 +875,7 @@ def main():
         target_date, config, events, geocode_enabled=not args.demo
     )
 
-    html = render_html(target_date, locations, trips_data)
+    html = render_html(target_date, locations, trips_data, config.get("google_maps_api_key"))
     output_path = args.output or f"送迎ルート_{target_date.isoformat()}.html"
     with open(output_path, "w", encoding="utf-8") as f:
         f.write(html)
@@ -1094,7 +1065,7 @@ def build_route(target_date, config, events, geocode_enabled=True):
     return locations, trips_data
 
 
-def render_html(target_date, locations, trips_data):
+def render_html(target_date, locations, trips_data, google_maps_api_key=None):
     parts = []
     parts.append("<!DOCTYPE html><html lang='ja'><head><meta charset='utf-8'>")
     parts.append(f"<title>送迎ルート {target_date.isoformat()}</title>")
@@ -1199,11 +1170,9 @@ def render_html(target_date, locations, trips_data):
         )
         parts.append("</table>")
         parts.append(f"<a class='maps-link' href='{trip['maps_url']}' target='_blank'>Googleマップでルートを開く</a>")
-        if trip["map_points"]:
-            print(f"地図画像を取得します({trip['label']} 第{trip['trip_no']}便、地点数: {len(trip['map_points'])})...", file=sys.stderr)
-            data_uri = fetch_static_map_data_uri(trip["map_points"])
+        if trip["map_points"] and google_maps_api_key:
+            data_uri = fetch_static_map_data_uri(trip["map_points"], google_maps_api_key)
         else:
-            print(f"警告: {trip['label']} 第{trip['trip_no']}便は座標が取得できていないため地図画像をスキップします。", file=sys.stderr)
             data_uri = None
         if data_uri:
             print("→ 地図画像の取得に成功しました。", file=sys.stderr)
