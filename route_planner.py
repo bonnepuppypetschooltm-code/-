@@ -1199,8 +1199,14 @@ def render_html(target_date, locations, trips_data):
         )
         parts.append("</table>")
         parts.append(f"<a class='maps-link' href='{trip['maps_url']}' target='_blank'>Googleマップでルートを開く</a>")
-        data_uri = fetch_static_map_data_uri(trip["map_points"]) if trip["map_points"] else None
+        if trip["map_points"]:
+            print(f"地図画像を取得します({trip['label']} 第{trip['trip_no']}便、地点数: {len(trip['map_points'])})...", file=sys.stderr)
+            data_uri = fetch_static_map_data_uri(trip["map_points"])
+        else:
+            print(f"警告: {trip['label']} 第{trip['trip_no']}便は座標が取得できていないため地図画像をスキップします。", file=sys.stderr)
+            data_uri = None
         if data_uri:
+            print("→ 地図画像の取得に成功しました。", file=sys.stderr)
             parts.append(f"<img class='route-map' src='{data_uri}' alt='ルート地図(番号は表の順番と対応)'>")
         else:
             parts.append(f"<iframe class='map-embed' src='{trip['embed_url']}' loading='lazy'></iframe>")
