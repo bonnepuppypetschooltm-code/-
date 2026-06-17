@@ -14,6 +14,7 @@ Google カレンダーの予定から「🚗」マーク付きの園児を抽出
 """
 
 import argparse
+import base64
 import datetime
 import itertools
 import json
@@ -75,6 +76,99 @@ def format_crate_sizes(sizes, default_crate_size):
     return "+".join(
         f"{size}×{counts[size]}" if counts[size] > 1 else size for size in order
     )
+
+
+def build_static_map_url(map_points):
+    """実際の地図(OpenStreetMap)上に、番号付きのマーカーとルート線を描いた
+    画像のURLを作成する(APIキー不要のstaticmap.openstreetmap.deを利用)。
+
+    お宅が増えても、どのマーカーがどのお宅かを番号で区別できるようにする。
+    """
+    if not map_points:
+        return None
+
+    width, height = 600, 400
+    tile_size = 256
+
+    lats = [p["lat"] for p in map_points]
+    lons = [p["lon"] for p in map_points]
+    min_lat, max_lat = min(lats), max(lats)
+    min_lon, max_lon = min(lons), max(lons)
+    center_lat = (min_lat + max_lat) / 2
+    center_lon = (min_lon + max_lon) / 2
+
+    def lat_to_merc_y(lat):
+        lat = max(min(lat, 85.05112878), -85.05112878)
+        sin_lat = math.sin(math.radians(lat))
+        return math.log((1 + sin_lat) / (1 - sin_lat)) / 2
+
+    lon_span = max(max_lon - min_lon, 1e-9)
+    lat_span = max(lat_to_merc_y(max_lat) - lat_to_merc_y(min_lat), 1e-9)
+
+    zoom_lon = math.log2(width * 360 / lon_span / tile_size)
+    zoom_lat = math.log2(height * (2 * math.pi) / lat_span / tile_size)
+    # 少し余白を持たせるため1段階小さくする
+    zoom = int(math.floor(min(zoom_lon, zoom_lat))) - 1
+    zoom = max(1, min(zoom, 18))
+
+    colors = ["red", "blue", "green", "orange", "purple", "lightblue", "gray", "brown"]
+    markers = []
+    for p in map_points:
+        if p["label"] in ("店", "P"):
+            markers.append(f"{p['lat']},{p['lon']},lightblue1")
+        else:
+            try:
+                num = int(p["label"])
+            except ValueError:
+                num = 1
+            color = colors[(num - 1) % len(colors)]
+            num9 = ((num - 1) % 9) + 1
+            markers.append(f"{p['lat']},{p['lon']},{color}{num9}")
+
+    path_points = "|".join(f"{p['lat']},{p['lon']}" for p in map_points)
+
+    params = [
+        ("center", f"{center_lat},{center_lon}"),
+        ("zoom", str(zoom)),
+        ("size", f"{width}x{height}"),
+        ("maptype", "mapnik"),
+        ("path", f"color:0x1a73e8cc|weight:3|{path_points}"),
+    ]
+    query = urllib.parse.urlencode(params)
+    marker_query = "&".join(f"markers={urllib.parse.quote(m)}" for m in markers)
+    return f"https://staticmap.openstreetmap.de/staticmap.php?{query}&{marker_query}"
+
+
+def fetch_static_map_data_uri(map_points, timeout=10, retries=2):
+    """地図画像をルート作成時にダウンロードし、HTMLに直接埋め込めるbase64形式にする。
+
+    メールで届いたHTMLをスマホで開く時点ではネット接続やJavaScriptの実行が
+    制限されていることが多いため、<img src="https://...">のような外部URLでは
+    画像が表示されない。あらかじめパソコン側(ルート作成時)で画像データを
+    取得し、HTMLファイルの中に埋め込んでおくことで、スマホ側はネット接続なしで
+    画像を表示できるようにする。
+    外部サービスが不安定なことがあるため、失敗時は何度か再試行する。
+    """
+    url = build_static_map_url(map_points)
+    if not url:
+        return None
+    last_error = None
+    for _ in range(max(1, retries)):
+        try:
+            req = urllib.request.Request(url, headers={"User-Agent": "route-planner/1.0"})
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                data = resp.read()
+                content_type = resp.headers.get_content_type() or "image/png"
+            # 極端に小さいデータはエラー画像の可能性が高いので失敗扱いにする
+            if len(data) < 1000:
+                last_error = "image too small"
+                continue
+            encoded = base64.b64encode(data).decode("ascii")
+            return f"data:{content_type};base64,{encoded}"
+        except Exception as exc:
+            last_error = exc
+            continue
+    return None
 
 
 
@@ -934,6 +1028,15 @@ def build_route(target_date, config, events, geocode_enabled=True):
             else:
                 arrival_text = "-"
 
+            map_points = []
+            if start_coords:
+                map_points.append({"lat": start_coords[0], "lon": start_coords[1], "label": start_short, "title": start_name})
+            for idx, stop in enumerate(trip_stops, start=1):
+                if stop.coords:
+                    map_points.append({"lat": stop.coords[0], "lon": stop.coords[1], "label": str(idx), "title": stop.name})
+            if end_coords:
+                map_points.append({"lat": end_coords[0], "lon": end_coords[1], "label": end_short, "title": end_name})
+
             trip = {
                 "label": label,
                 "trip_no": i,
@@ -942,6 +1045,7 @@ def build_route(target_date, config, events, geocode_enabled=True):
                 "departure": departure.strftime("%H:%M"),
                 "arrival": arrival_text,
                 "trip_minutes": trip_minutes,
+                "map_points": map_points,
                 "rows": [],
                 "start_name": start_name,
                 "end_name": end_name,
@@ -1004,6 +1108,7 @@ def render_html(target_date, locations, trips_data):
         ".maps-link{display:inline-block;margin-top:8px;padding:6px 12px;"
         "background:#1a73e8;color:#fff;text-decoration:none;border-radius:4px;}"
         ".map-embed{width:100%;height:400px;border:0;margin-top:8px;}"
+        ".route-map{width:100%;height:auto;margin-top:8px;border:1px solid #ccc;background:#eef3f8;}"
         ".departure{font-size:1.1em;font-weight:bold;color:#1a73e8;margin:4px 0;}"
         ".departure input{font-size:1em;font-weight:bold;color:#1a73e8;"
         "border:1px solid #1a73e8;border-radius:4px;padding:2px 4px;}"
@@ -1093,7 +1198,11 @@ def render_html(target_date, locations, trips_data):
         )
         parts.append("</table>")
         parts.append(f"<a class='maps-link' href='{trip['maps_url']}' target='_blank'>Googleマップでルートを開く</a>")
-        parts.append(f"<iframe class='map-embed' src='{trip['embed_url']}' loading='lazy'></iframe>")
+        data_uri = fetch_static_map_data_uri(trip["map_points"]) if trip["map_points"] else None
+        if data_uri:
+            parts.append(f"<img class='route-map' src='{data_uri}' alt='ルート地図(番号は表の順番と対応)'>")
+        else:
+            parts.append(f"<iframe class='map-embed' src='{trip['embed_url']}' loading='lazy'></iframe>")
 
     parts.append(
         "<script>"
