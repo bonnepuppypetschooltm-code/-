@@ -1023,11 +1023,6 @@ def build_route(target_date, config, events, geocode_enabled=True):
                 "end_name": end_name,
                 "maps_url": build_maps_url(start_address, end_address, [s.address for s in trip_stops]),
                 "embed_url": build_embed_url(start_address, end_address, [s.address for s in trip_stops]),
-                "start_coords": start_coords,
-                "end_coords": end_coords,
-                "avg_speed_kmh": config.get("avg_speed_kmh", 20),
-                "route_distance_factor": config.get("route_distance_factor", 1.3),
-                "stop_minutes": config.get("stop_minutes", 5),
             }
             for idx, stop in enumerate(trip_stops):
                 if stop.requested_time:
@@ -1057,8 +1052,6 @@ def build_route(target_date, config, events, geocode_enabled=True):
                         "next": to_text,
                         "arrival_minutes": arrival_minutes,
                         "arrival_time": arrival_time_text,
-                        "lat": stop.coords[0] if stop.coords else None,
-                        "lon": stop.coords[1] if stop.coords else None,
                     }
                 )
             trips_data.append(trip)
@@ -1093,7 +1086,6 @@ def render_html(target_date, locations, trips_data, google_maps_api_key=None):
         "border:1px solid #1a73e8;border-radius:4px;padding:2px 4px;}"
         ".capacity-note{color:#555;margin:4px 0;}"
         ".arrival-input{font-size:1em;border:1px solid #ccc;border-radius:4px;padding:2px 4px;width:100%;}"
-        ".move-btn{margin-left:4px;cursor:pointer;}"
         "</style></head><body>"
     )
     parts.append(f"<h1>送迎ルート {target_date.isoformat()}</h1>")
@@ -1150,15 +1142,7 @@ def render_html(target_date, locations, trips_data, google_maps_api_key=None):
             parts.append(f"<p class='capacity-note'>あとまだ積めます: {remaining_text}</p>")
         else:
             parts.append("<p class='capacity-note'>満載です</p>")
-        start_lat, start_lon = trip["start_coords"] if trip["start_coords"] else ("", "")
-        end_lat, end_lon = trip["end_coords"] if trip["end_coords"] else ("", "")
-        parts.append(
-            f"<table data-route-trip='{trip_idx}' data-start-lat='{start_lat}' data-start-lon='{start_lon}' "
-            f"data-end-lat='{end_lat}' data-end-lon='{end_lon}' data-speed='{trip['avg_speed_kmh']}' "
-            f"data-factor='{trip['route_distance_factor']}' data-stopmin='{trip['stop_minutes']}' "
-            f"data-start-name='{trip['start_name']}' data-end-name='{trip['end_name']}'>"
-            "<tr><th>順番</th><th>名前</th><th>住所</th><th>希望時刻</th><th>クレート</th><th>到着予定</th><th>ここまで</th><th>次まで</th></tr>"
-        )
+        parts.append("<table><tr><th>順番</th><th>名前</th><th>住所</th><th>希望時刻</th><th>クレート</th><th>到着予定</th><th>ここまで</th><th>次まで</th></tr>")
         final_order = len(trip["rows"]) + 1
         parts.append(
             f"<tr><td>出発</td><td colspan='2'>{trip['start_name']}</td><td>-</td><td>-</td>"
@@ -1173,18 +1157,11 @@ def render_html(target_date, locations, trips_data, google_maps_api_key=None):
                 f"data-min='{data_min}' data-suffix='' value='{arrival_value}' "
                 f"oninput='recalcFromArrivalEdit(this)' onchange='recalcFromArrivalEdit(this)'>"
             )
-            lat = row["lat"] if row["lat"] is not None else ""
-            lon = row["lon"] if row["lon"] is not None else ""
-            move_buttons = (
-                "<button type='button' class='move-btn' onclick='moveStopRow(this,-1)'>↑</button>"
-                "<button type='button' class='move-btn' onclick='moveStopRow(this,1)'>↓</button>"
-            )
             parts.append(
-                f"<tr class='stop-row' data-lat='{lat}' data-lon='{lon}' data-name='{row['name']}'>"
-                f"<td class='order-cell'>{i} {move_buttons}</td><td>{row['name']}</td><td>{row['address']}</td>"
+                f"<tr><td>{i}</td><td>{row['name']}</td><td>{row['address']}</td>"
                 f"<td>{row['time']}</td><td>{row['crate']}</td>"
                 f"<td>{arrival_cell}</td>"
-                f"<td class='from-cell'>{row['from']}</td><td class='next-cell'>{row['next']}</td></tr>"
+                f"<td>{row['from']}</td><td>{row['next']}</td></tr>"
             )
         parts.append(
             f"<tr><td>帰着</td><td colspan='2'>{trip['end_name']}</td><td>-</td><td>-</td>"
@@ -1253,92 +1230,6 @@ def render_html(target_date, locations, trips_data, google_maps_api_key=None):
         "if(delta===0)return;"
         "dep.value=minutesToTime(base+delta);"
         "recalcFromDeparture(tripIdx);"
-        "}"
-        "function haversineKm(lat1,lon1,lat2,lon2){"
-        "var R=6371.0;"
-        "var toRad=function(d){return d*Math.PI/180;};"
-        "var dLat=toRad(lat2-lat1);var dLon=toRad(lon2-lon1);"
-        "var a=Math.sin(dLat/2)*Math.sin(dLat/2)+"
-        "Math.cos(toRad(lat1))*Math.cos(toRad(lat2))*Math.sin(dLon/2)*Math.sin(dLon/2);"
-        "var c=2*Math.atan2(Math.sqrt(a),Math.sqrt(1-a));"
-        "return R*c;"
-        "}"
-        "function moveStopRow(button,direction){"
-        "var row=button.closest('tr');"
-        "var target=direction<0?row.previousElementSibling:row.nextElementSibling;"
-        "if(!target||!target.classList.contains('stop-row'))return;"
-        "if(direction<0){row.parentNode.insertBefore(row,target);}"
-        "else{row.parentNode.insertBefore(target,row);}"
-        "var table=row.closest('table');"
-        "renumberStopRows(table);"
-        "recalcOrder(table);"
-        "}"
-        "function renumberStopRows(table){"
-        "var rows=table.querySelectorAll('tr.stop-row');"
-        "rows.forEach(function(r,idx){"
-        "var cell=r.querySelector('.order-cell');"
-        "var buttons=cell.querySelectorAll('button');"
-        "cell.innerHTML='';"
-        "cell.appendChild(document.createTextNode((idx+1)+' '));"
-        "buttons.forEach(function(b){cell.appendChild(b);});"
-        "var input=r.querySelector('.arrival-input');"
-        "input.setAttribute('data-order',idx+1);"
-        "});"
-        "}"
-        "function recalcOrder(table){"
-        "var tripIdx=table.getAttribute('data-route-trip');"
-        "var startLat=parseFloat(table.getAttribute('data-start-lat'));"
-        "var startLon=parseFloat(table.getAttribute('data-start-lon'));"
-        "var endLat=parseFloat(table.getAttribute('data-end-lat'));"
-        "var endLon=parseFloat(table.getAttribute('data-end-lon'));"
-        "var speed=parseFloat(table.getAttribute('data-speed'));"
-        "var factor=parseFloat(table.getAttribute('data-factor'));"
-        "var stopMin=parseFloat(table.getAttribute('data-stopmin'));"
-        "var startName=table.getAttribute('data-start-name');"
-        "var endName=table.getAttribute('data-end-name');"
-        "var rows=Array.prototype.slice.call(table.querySelectorAll('tr.stop-row'));"
-        "var points=[{lat:startLat,lon:startLon,name:startName}];"
-        "rows.forEach(function(r){"
-        "points.push({lat:parseFloat(r.getAttribute('data-lat')),lon:parseFloat(r.getAttribute('data-lon')),name:r.getAttribute('data-name')});"
-        "});"
-        "points.push({lat:endLat,lon:endLon,name:endName});"
-        "var legs=[];"
-        "for(var i=0;i<points.length-1;i++){"
-        "var p1=points[i],p2=points[i+1];"
-        "if(isNaN(p1.lat)||isNaN(p1.lon)||isNaN(p2.lat)||isNaN(p2.lon)){legs.push(null);continue;}"
-        "var km=haversineKm(p1.lat,p1.lon,p2.lat,p2.lon);"
-        "var min=km*factor/speed*60;"
-        "if(i>0){min+=stopMin;}"
-        "legs.push(min);"
-        "}"
-        "var dep=document.getElementById('dep-'+tripIdx);"
-        "var base=dep&&dep.value?timeToMinutes(dep.value):null;"
-        "var cum=0;var broken=false;"
-        "rows.forEach(function(r,idx){"
-        "var input=r.querySelector('.arrival-input');"
-        "var fromCell=r.querySelector('.from-cell');"
-        "var nextCell=r.querySelector('.next-cell');"
-        "var fromLeg=legs[idx];var nextLeg=legs[idx+1];"
-        "fromCell.textContent=fromLeg!==null?(points[idx].name+'から約'+Math.round(fromLeg)+'分'):'-';"
-        "nextCell.textContent=nextLeg!==null?(points[idx+2].name+'まで約'+Math.round(nextLeg)+'分'):'-';"
-        "if(broken||fromLeg===null){broken=true;input.setAttribute('data-min','');input.value='';return;}"
-        "cum+=fromLeg;"
-        "input.setAttribute('data-min',cum);"
-        "input.value=base!==null?minutesToTime(base+cum):'';"
-        "});"
-        "var lastLeg=legs[legs.length-1];"
-        "var tripTotal=null;"
-        "if(!broken&&lastLeg!==null){tripTotal=cum+lastLeg;}"
-        "var arrCell=table.querySelector('tr td[data-order=\"'+(rows.length+1)+'\"]');"
-        "if(arrCell){"
-        "arrCell.setAttribute('data-min',tripTotal!==null?tripTotal:'');"
-        "arrCell.textContent=(tripTotal!==null&&base!==null)?(minutesToTime(base+tripTotal)+' 頃 (目安)'):'-';"
-        "}"
-        "var arr=document.getElementById('arr-'+tripIdx);"
-        "if(arr){"
-        "arr.setAttribute('data-trip-minutes',tripTotal!==null?tripTotal:'');"
-        "if(tripTotal!==null&&base!==null){arr.value=minutesToTime(base+tripTotal);}"
-        "}"
         "}"
         "</script>"
     )
