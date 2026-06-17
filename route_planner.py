@@ -168,6 +168,7 @@ def fetch_static_map_data_uri(map_points, timeout=10, retries=2):
         except Exception as exc:
             last_error = exc
             continue
+    print(f"警告: 地図画像の取得に失敗しました ({last_error})。Googleマップの埋め込みを表示します。", file=sys.stderr)
     return None
 
 
