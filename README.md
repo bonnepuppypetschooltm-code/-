@@ -291,8 +291,12 @@ email_to: "送信先のメールアドレス"
 
    ```bat
    cd /d "C:\Users\bonnepuppy天満店\Downloads\..."
-   python route_planner.py --no-open
+   python route_planner.py --no-open --tomorrow
    ```
+
+   (`--tomorrow` を付けると、実行した日の「翌日」の送迎スケジュールが作成されます。
+   前日のうちに翌日分の準備をするための運用を想定しています。
+   今日の分を作りたい場合は `--tomorrow` を外してください)
 
 2. Windowsの「タスクスケジューラ」を開く(スタートメニューで検索)
 3. 「タスクの作成」→「トリガー」タブで「毎日 8:00」など好きな時刻を設定

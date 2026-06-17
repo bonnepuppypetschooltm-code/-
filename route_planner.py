@@ -769,6 +769,11 @@ def main():
         help="対象日 (YYYY-MM-DD)。未指定なら今日",
     )
     parser.add_argument(
+        "--tomorrow",
+        action="store_true",
+        help="対象日を「明日」にする(--dateと併用した場合は--dateが優先されます)",
+    )
+    parser.add_argument(
         "--demo",
         action="store_true",
         help="サンプルデータを使い、Google Calendar/Maps APIなしで動作確認する",
@@ -815,9 +820,12 @@ def main():
     )
     args = parser.parse_args()
 
-    target_date = (
-        datetime.date.fromisoformat(args.date) if args.date else datetime.date.today()
-    )
+    if args.date:
+        target_date = datetime.date.fromisoformat(args.date)
+    elif args.tomorrow:
+        target_date = datetime.date.today() + datetime.timedelta(days=1)
+    else:
+        target_date = datetime.date.today()
 
     if args.list_events:
         config = load_config(args.config)
