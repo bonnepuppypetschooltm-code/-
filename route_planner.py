@@ -14,6 +14,7 @@ Google カレンダーの予定から「🚗」マーク付きの園児を抽出
 """
 
 import argparse
+import base64
 import datetime
 import itertools
 import json
@@ -140,6 +141,85 @@ def build_static_map_url(map_points):
     return f"https://staticmap.openstreetmap.de/staticmap.php?{query}&{marker_query}"
 
 
+def fetch_static_map_data_uri(map_points, timeout=10):
+    """地図画像をルート作成時にダウンロードし、HTMLに直接埋め込めるbase64形式にする。
+
+    メールで届いたHTMLをスマホで開く時点ではネット接続やJavaScriptの実行が
+    制限されていることが多いため、<img src="https://...">のような外部URLでは
+    画像が表示されない。あらかじめパソコン側(ルート作成時)で画像データを
+    取得し、HTMLファイルの中に埋め込んでおくことで、スマホ側はネット接続なしで
+    画像を表示できるようにする。
+    """
+    url = build_static_map_url(map_points)
+    if not url:
+        return None
+    try:
+        req = urllib.request.Request(url, headers={"User-Agent": "route-planner/1.0"})
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            data = resp.read()
+            content_type = resp.headers.get_content_type() or "image/png"
+        encoded = base64.b64encode(data).decode("ascii")
+        return f"data:{content_type};base64,{encoded}"
+    except Exception:
+        return None
+
+
+def render_route_map_svg(map_points):
+    """地図画像が取得できなかった場合のフォールバック。
+
+    外部の地図タイルやJavaScriptを使わず、緯度経度から位置関係だけを
+    示す簡易図をSVGで直接埋め込む(ネット接続なしでも表示できる)。
+    """
+    if not map_points:
+        return ""
+
+    width, height = 600, 400
+    pad = 30
+
+    lats = [p["lat"] for p in map_points]
+    lons = [p["lon"] for p in map_points]
+    avg_lat = sum(lats) / len(lats)
+    lon_factor = math.cos(math.radians(avg_lat))
+
+    min_lat, max_lat = min(lats), max(lats)
+    min_lon, max_lon = min(lons), max(lons)
+    lat_span = max(max_lat - min_lat, 1e-6)
+    lon_span = max((max_lon - min_lon) * lon_factor, 1e-6)
+    scale = min((width - 2 * pad) / lon_span, (height - 2 * pad) / lat_span)
+
+    center_lat = (min_lat + max_lat) / 2
+    center_lon = (min_lon + max_lon) / 2
+
+    def project(lat, lon):
+        x = width / 2 + (lon - center_lon) * lon_factor * scale
+        y = height / 2 - (lat - center_lat) * scale
+        return x, y
+
+    points_xy = [project(p["lat"], p["lon"]) for p in map_points]
+
+    parts = [
+        f"<svg viewBox='0 0 {width} {height}' xmlns='http://www.w3.org/2000/svg' "
+        "class='route-map'>"
+    ]
+    line_points = " ".join(f"{x:.1f},{y:.1f}" for x, y in points_xy)
+    parts.append(
+        f"<polyline points='{line_points}' fill='none' stroke='#1a73e8' "
+        "stroke-width='3' stroke-opacity='0.6' />"
+    )
+    for (x, y), p in zip(points_xy, map_points):
+        is_store = p["label"] == "店"
+        color = "#d93025" if is_store else "#1a73e8"
+        parts.append(f"<g><title>{p['title']}</title>")
+        parts.append(f"<circle cx='{x:.1f}' cy='{y:.1f}' r='14' fill='{color}' stroke='#fff' stroke-width='2' />")
+        parts.append(
+            f"<text x='{x:.1f}' y='{y:.1f}' text-anchor='middle' dominant-baseline='central' "
+            f"fill='#fff' font-size='13' font-weight='bold' font-family='sans-serif'>{p['label']}</text>"
+        )
+        parts.append("</g>")
+    parts.append("</svg>")
+    return "".join(parts)
+
+
 GEOCODE_CACHE_FILE = ".geocode_cache.json"
 GEOCODE_URL = "https://msearch.gsi.go.jp/address-search/AddressSearch?q="
 
@@ -238,19 +318,19 @@ def haversine_km(p1, p2):
     return 2 * r * math.asin(math.sqrt(a))
 
 
-def estimate_leg_minutes(base_coords, stops, avg_speed_kmh, route_distance_factor=1.0, travel_time_overrides=None, stop_minutes=0):
-    """拠点 -> 各お宅 -> 拠点 を1区間ずつ移動した場合の所要時間(分)のリストを返す。
-    結果は (len(stops) + 1) 件で、先頭が「拠点 -> 最初のお宅」、
-    末尾が「最後のお宅 -> 拠点」。座標が取得できない区間は None になる。
+def estimate_leg_minutes(start_coords, end_coords, stops, avg_speed_kmh, route_distance_factor=1.0, travel_time_overrides=None, stop_minutes=0):
+    """出発地点 -> 各お宅 -> 帰着地点 を1区間ずつ移動した場合の所要時間(分)のリストを返す。
+    結果は (len(stops) + 1) 件で、先頭が「出発地点 -> 最初のお宅」、
+    末尾が「最後のお宅 -> 帰着地点」。座標が取得できない区間は None になる。
 
     実際の道路距離は直線距離より長くなるため、route_distance_factor を
     かけて補正する(例: 1.3 なら直線距離の1.3倍を走行距離とみなす)。
 
     travel_time_overrides は { 住所: {"from_store": 分, "to_store": 分} }
-    の形式で、拠点との往復にかかる実際の時間がわかっている場合に
+    の形式で、出発・帰着地点との間にかかる実際の時間がわかっている場合に
     計算結果を上書きするための設定(値は純粋な移動時間)。
 
-    stop_minutes は1軒あたりの乗せ降ろし時間。最初の区間(拠点 -> 最初のお宅)
+    stop_minutes は1軒あたりの乗せ降ろし時間。最初の区間(出発地点 -> 最初のお宅)
     以外の各区間には、出発前の乗せ降ろし時間としてこの分数を加算する。
     """
     travel_time_overrides = travel_time_overrides or {}
@@ -259,7 +339,7 @@ def estimate_leg_minutes(base_coords, stops, avg_speed_kmh, route_distance_facto
         normalize_address(addr): override for addr, override in travel_time_overrides.items()
     }
 
-    points = [base_coords] + [s.coords for s in stops] + [base_coords]
+    points = [start_coords] + [s.coords for s in stops] + [end_coords]
     legs = []
     for i in range(len(points) - 1):
         km = haversine_km(points[i], points[i + 1])
@@ -366,7 +446,7 @@ def evaluate_departure(trip_stops, leg_minutes, target_date, buffer_minutes):
     return departure, margin, cumulative
 
 
-def order_stops_for_schedule(trip_stops, base_coords, avg_speed_kmh, route_distance_factor,
+def order_stops_for_schedule(trip_stops, start_coords, end_coords, avg_speed_kmh, route_distance_factor,
                               travel_time_overrides, stop_minutes, target_date, buffer_minutes,
                               is_dropoff, max_anchors=7):
     """時刻指定のあるお宅(アンカー)の順番を入れ替えて、すべての希望時刻に
@@ -395,7 +475,7 @@ def order_stops_for_schedule(trip_stops, base_coords, avg_speed_kmh, route_dista
     best = None
     for candidate_stops in candidates:
         leg_minutes = estimate_leg_minutes(
-            base_coords, candidate_stops, avg_speed_kmh, route_distance_factor,
+            start_coords, end_coords, candidate_stops, avg_speed_kmh, route_distance_factor,
             travel_time_overrides, stop_minutes,
         )
         departure, margin, cumulative = evaluate_departure(
@@ -417,6 +497,9 @@ def order_stops_for_schedule(trip_stops, base_coords, avg_speed_kmh, route_dista
 
 DEFAULT_CONFIG = {
     "base_address": "大阪府大阪市北区天神橋4-6-17 上谷ビル1F.2F",
+    "base_name": "天満店",
+    "parking_address": None,
+    "parking_name": "駐車場",
     "crate_capacity": {"特大": 2, "大": 4, "中": 9, "小": 12},
     "default_crate_size": "中",
     "morning_start_time": "08:30",
@@ -701,11 +784,9 @@ def minutes_between(time1, time2):
     return (time2.hour * 60 + time2.minute) - (time1.hour * 60 + time1.minute)
 
 
-def build_maps_url(base_address, stop_addresses):
-    """APIキー不要の Google Maps 経路リンクを作る (拠点 -> 各お宅 -> 拠点)"""
-    import urllib.parse
-
-    points = [base_address] + stop_addresses + [base_address]
+def build_maps_url(start_address, end_address, stop_addresses):
+    """APIキー不要の Google Maps 経路リンクを作る (出発地点 -> 各お宅 -> 帰着地点)"""
+    points = [start_address] + stop_addresses + [end_address]
     encoded = [urllib.parse.quote(p, safe="") for p in points]
     origin = encoded[0]
     destination = encoded[-1]
@@ -720,9 +801,9 @@ def build_maps_url(base_address, stop_addresses):
     return url
 
 
-def build_embed_url(base_address, stop_addresses):
+def build_embed_url(start_address, end_address, stop_addresses):
     """APIキー不要で画面に埋め込める Google マップの経路表示用URLを作る"""
-    points = [base_address] + stop_addresses + [base_address]
+    points = [start_address] + stop_addresses + [end_address]
     encoded = [urllib.parse.quote_plus(p) for p in points]
     saddr = encoded[0]
     daddr = "+to:".join(encoded[1:])
@@ -863,11 +944,11 @@ def main():
         service = get_calendar_service(config)
         events = fetch_events(service, config["calendar_id"], target_date)
 
-    base_address, trips_data = build_route(
+    locations, trips_data = build_route(
         target_date, config, events, geocode_enabled=not args.demo
     )
 
-    html = render_html(target_date, base_address, trips_data)
+    html = render_html(target_date, locations, trips_data)
     output_path = args.output or f"送迎ルート_{target_date.isoformat()}.html"
     with open(output_path, "w", encoding="utf-8") as f:
         f.write(html)
@@ -902,14 +983,20 @@ def build_route(target_date, config, events, geocode_enabled=True):
             dropoff_stops.append(dropoff)
 
     base_address = config["base_address"]
+    base_name = config.get("base_name") or "天満店"
+    parking_address = config.get("parking_address")
+    parking_name = config.get("parking_name") or "駐車場"
     crate_capacity = config["crate_capacity"]
     default_crate_size = config["default_crate_size"]
     capacity_units, crate_weights = crate_units(crate_capacity)
 
     base_coords = None
+    parking_coords = None
     if geocode_enabled:
         cache = load_geocode_cache()
         base_coords = geocode(base_address, cache)
+        if parking_address:
+            parking_coords = geocode(parking_address, cache)
         for stop in pickup_stops + dropoff_stops:
             stop.coords = geocode(stop.address, cache)
             stop.distance_from_base = haversine_km(base_coords, stop.coords)
@@ -923,11 +1010,18 @@ def build_route(target_date, config, events, geocode_enabled=True):
     )
     buffer_minutes = config.get("departure_buffer_minutes", 15)
 
+    base_info = (base_address, base_name, base_coords, "店")
+    parking_info = (parking_address or base_address, parking_name if parking_address else base_name,
+                    parking_coords if parking_address else base_coords, "P" if parking_address else "店")
+
     trips_data = []
-    for label, stops, default_start, default_is_arrival_target in (
-        ("朝のお迎え便", pickup_stops, default_morning_start, False),
-        ("夕方の送り便", dropoff_stops, default_evening_start, True),
+    for label, stops, default_start, default_is_arrival_target, start_info, end_info in (
+        ("朝のお迎え便", pickup_stops, default_morning_start, False, parking_info, base_info),
+        ("夕方の送り便", dropoff_stops, default_evening_start, True, base_info, parking_info),
     ):
+        start_address, start_name, start_coords, start_short = start_info
+        end_address, end_name, end_coords, end_short = end_info
+
         if not stops:
             trips_data.append({"label": label, "rows": None})
             continue
@@ -953,7 +1047,8 @@ def build_route(target_date, config, events, geocode_enabled=True):
 
             trip_stops, leg_minutes, departure, cumulative_minutes = order_stops_for_schedule(
                 trip_stops,
-                base_coords,
+                start_coords,
+                end_coords,
                 config.get("avg_speed_kmh", 20),
                 config.get("route_distance_factor", 1.3),
                 config.get("travel_time_overrides"),
@@ -979,12 +1074,13 @@ def build_route(target_date, config, events, geocode_enabled=True):
                 arrival_text = "-"
 
             map_points = []
-            if base_coords:
-                map_points.append({"lat": base_coords[0], "lon": base_coords[1], "label": "店", "title": "店舗"})
-                for idx, stop in enumerate(trip_stops, start=1):
-                    if stop.coords:
-                        map_points.append({"lat": stop.coords[0], "lon": stop.coords[1], "label": str(idx), "title": stop.name})
-                map_points.append({"lat": base_coords[0], "lon": base_coords[1], "label": "店", "title": "店舗"})
+            if start_coords:
+                map_points.append({"lat": start_coords[0], "lon": start_coords[1], "label": start_short, "title": start_name})
+            for idx, stop in enumerate(trip_stops, start=1):
+                if stop.coords:
+                    map_points.append({"lat": stop.coords[0], "lon": stop.coords[1], "label": str(idx), "title": stop.name})
+            if end_coords:
+                map_points.append({"lat": end_coords[0], "lon": end_coords[1], "label": end_short, "title": end_name})
 
             trip = {
                 "label": label,
@@ -995,8 +1091,10 @@ def build_route(target_date, config, events, geocode_enabled=True):
                 "arrival": arrival_text,
                 "trip_minutes": trip_minutes,
                 "rows": [],
-                "maps_url": build_maps_url(base_address, [s.address for s in trip_stops]),
-                "embed_url": build_embed_url(base_address, [s.address for s in trip_stops]),
+                "start_name": start_name,
+                "end_name": end_name,
+                "maps_url": build_maps_url(start_address, end_address, [s.address for s in trip_stops]),
+                "embed_url": build_embed_url(start_address, end_address, [s.address for s in trip_stops]),
                 "map_points": map_points,
             }
             for idx, stop in enumerate(trip_stops):
@@ -1006,8 +1104,8 @@ def build_route(target_date, config, events, geocode_enabled=True):
                 else:
                     t = "-"
                 size = format_crate_sizes(stop.crate_sizes, default_crate_size)
-                prev_label = trip_stops[idx - 1].name if idx > 0 else "店舗"
-                next_label = trip_stops[idx + 1].name if idx + 1 < len(trip_stops) else "店舗"
+                prev_label = trip_stops[idx - 1].name if idx > 0 else start_name
+                next_label = trip_stops[idx + 1].name if idx + 1 < len(trip_stops) else end_name
                 from_minutes = leg_minutes[idx]
                 to_minutes = leg_minutes[idx + 1]
                 from_text = f"{prev_label}から約{round(from_minutes)}分" if from_minutes is not None else "-"
@@ -1031,10 +1129,16 @@ def build_route(target_date, config, events, geocode_enabled=True):
                 )
             trips_data.append(trip)
 
-    return base_address, trips_data
+    locations = {
+        "base_name": base_name,
+        "base_address": base_address,
+        "parking_name": parking_name if parking_address else None,
+        "parking_address": parking_address,
+    }
+    return locations, trips_data
 
 
-def render_html(target_date, base_address, trips_data):
+def render_html(target_date, locations, trips_data):
     parts = []
     parts.append("<!DOCTYPE html><html lang='ja'><head><meta charset='utf-8'>")
     parts.append(f"<title>送迎ルート {target_date.isoformat()}</title>")
@@ -1054,10 +1158,13 @@ def render_html(target_date, base_address, trips_data):
         ".departure input{font-size:1em;font-weight:bold;color:#1a73e8;"
         "border:1px solid #1a73e8;border-radius:4px;padding:2px 4px;}"
         ".capacity-note{color:#555;margin:4px 0;}"
+        ".arrival-input{font-size:1em;border:1px solid #ccc;border-radius:4px;padding:2px 4px;width:100%;}"
         "</style></head><body>"
     )
     parts.append(f"<h1>送迎ルート {target_date.isoformat()}</h1>")
-    parts.append(f"<p class='meta'>拠点: {base_address}</p>")
+    parts.append(f"<p class='meta'>{locations['base_name']}: {locations['base_address']}</p>")
+    if locations.get("parking_address"):
+        parts.append(f"<p class='meta'>{locations['parking_name']}: {locations['parking_address']}</p>")
     parts.append(
         "<p class='meta'>出発時刻は下の入力欄で変更できます。"
         "変更すると、到着予定・帰着予定が自動で再計算されます(あくまで目安です)。</p>"
@@ -1109,28 +1216,35 @@ def render_html(target_date, base_address, trips_data):
             parts.append("<p class='capacity-note'>満載です</p>")
         parts.append("<table><tr><th>順番</th><th>名前</th><th>住所</th><th>希望時刻</th><th>クレート</th><th>到着予定</th><th>ここまで</th><th>次まで</th></tr>")
         parts.append(
-            f"<tr><td>出発</td><td colspan='2'>{base_address}</td><td>-</td><td>-</td>"
+            f"<tr><td>出発</td><td colspan='2'>{trip['start_name']}</td><td>-</td><td>-</td>"
             f"<td data-trip='{trip_idx}' data-min='0' data-suffix=''>{trip['departure']}</td><td>-</td><td>-</td></tr>"
         )
         for i, row in enumerate(trip["rows"], start=1):
             arrival_min = row["arrival_minutes"]
             data_min = f"{arrival_min}" if arrival_min is not None else ""
+            arrival_value = row["arrival_time"] if row["arrival_time"] != "-" else ""
+            arrival_cell = (
+                f"<input type='time' class='arrival-input' data-trip='{trip_idx}' "
+                f"data-min='{data_min}' data-suffix='' value='{arrival_value}'>"
+            )
             parts.append(
                 f"<tr><td>{i}</td><td>{row['name']}</td><td>{row['address']}</td>"
                 f"<td>{row['time']}</td><td>{row['crate']}</td>"
-                f"<td data-trip='{trip_idx}' data-min='{data_min}' data-suffix=''>{row['arrival_time']}</td>"
+                f"<td>{arrival_cell}</td>"
                 f"<td>{row['from']}</td><td>{row['next']}</td></tr>"
             )
         parts.append(
-            f"<tr><td>帰着</td><td colspan='2'>{base_address}</td><td>-</td><td>-</td>"
+            f"<tr><td>帰着</td><td colspan='2'>{trip['end_name']}</td><td>-</td><td>-</td>"
             f"<td data-trip='{trip_idx}' data-min='{trip_minutes_attr}' "
             f"data-suffix=' 頃 (目安)'>{trip['arrival']}</td><td>-</td><td>-</td></tr>"
         )
         parts.append("</table>")
         parts.append(f"<a class='maps-link' href='{trip['maps_url']}' target='_blank'>Googleマップでルートを開く</a>")
-        map_url = build_static_map_url(trip["map_points"])
-        if map_url:
-            parts.append(f"<img class='route-map' src='{map_url}' alt='ルート地図' loading='lazy'>")
+        data_uri = fetch_static_map_data_uri(trip["map_points"]) if trip["map_points"] else None
+        if data_uri:
+            parts.append(f"<img class='route-map' src='{data_uri}' alt='ルート地図'>")
+        elif trip["map_points"]:
+            parts.append(render_route_map_svg(trip["map_points"]))
         else:
             parts.append(f"<iframe class='map-embed' src='{trip['embed_url']}' loading='lazy'></iframe>")
 
@@ -1151,9 +1265,11 @@ def render_html(target_date, base_address, trips_data):
         "var cells=document.querySelectorAll('[data-trip=\"'+tripIdx+'\"]');"
         "cells.forEach(function(cell){"
         "var min=cell.getAttribute('data-min');"
-        "if(min===null||min===''){cell.textContent='-';return;}"
+        "var isInput=(cell.tagName==='INPUT');"
+        "if(min===null||min===''){if(isInput){cell.value='';}else{cell.textContent='-';}return;}"
         "var suffix=cell.getAttribute('data-suffix')||'';"
-        "cell.textContent=minutesToTime(base+parseFloat(min))+suffix;"
+        "var text=minutesToTime(base+parseFloat(min))+suffix;"
+        "if(isInput){cell.value=text;}else{cell.textContent=text;}"
         "});"
         "var arr=document.getElementById('arr-'+tripIdx);"
         "var tripMin=arr.getAttribute('data-trip-minutes');"
