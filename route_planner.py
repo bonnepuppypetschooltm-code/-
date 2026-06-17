@@ -1153,7 +1153,7 @@ def render_html(target_date, locations, trips_data, google_maps_api_key=None):
         start_lat, start_lon = trip["start_coords"] if trip["start_coords"] else ("", "")
         end_lat, end_lon = trip["end_coords"] if trip["end_coords"] else ("", "")
         parts.append(
-            f"<table data-trip='{trip_idx}' data-start-lat='{start_lat}' data-start-lon='{start_lon}' "
+            f"<table data-route-trip='{trip_idx}' data-start-lat='{start_lat}' data-start-lon='{start_lon}' "
             f"data-end-lat='{end_lat}' data-end-lon='{end_lon}' data-speed='{trip['avg_speed_kmh']}' "
             f"data-factor='{trip['route_distance_factor']}' data-stopmin='{trip['stop_minutes']}' "
             f"data-start-name='{trip['start_name']}' data-end-name='{trip['end_name']}'>"
@@ -1286,7 +1286,7 @@ def render_html(target_date, locations, trips_data, google_maps_api_key=None):
         "});"
         "}"
         "function recalcOrder(table){"
-        "var tripIdx=table.getAttribute('data-trip');"
+        "var tripIdx=table.getAttribute('data-route-trip');"
         "var startLat=parseFloat(table.getAttribute('data-start-lat'));"
         "var startLon=parseFloat(table.getAttribute('data-start-lon'));"
         "var endLat=parseFloat(table.getAttribute('data-end-lat'));"
