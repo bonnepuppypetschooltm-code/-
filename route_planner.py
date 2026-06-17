@@ -1197,7 +1197,8 @@ def render_html(target_date, locations, trips_data):
             arrival_value = (departure_dt + datetime.timedelta(minutes=trip_minutes)).strftime("%H:%M")
             arrival_input = (
                 f"<input type='time' id='arr-{trip_idx}' value='{arrival_value}' "
-                f"data-trip-minutes='{trip_minutes_attr}' oninput='recalcFromArrival({trip_idx})' "
+                f"data-trip-minutes='{trip_minutes_attr}' data-order='{len(trip['rows']) + 1}' "
+                f"oninput='recalcFromArrival({trip_idx})' "
                 f"onchange='recalcFromArrival({trip_idx})'>"
             )
         else:
@@ -1218,16 +1219,17 @@ def render_html(target_date, locations, trips_data):
         else:
             parts.append("<p class='capacity-note'>満載です</p>")
         parts.append("<table><tr><th>順番</th><th>名前</th><th>住所</th><th>希望時刻</th><th>クレート</th><th>到着予定</th><th>ここまで</th><th>次まで</th></tr>")
+        final_order = len(trip["rows"]) + 1
         parts.append(
             f"<tr><td>出発</td><td colspan='2'>{trip['start_name']}</td><td>-</td><td>-</td>"
-            f"<td data-trip='{trip_idx}' data-min='0' data-suffix=''>{trip['departure']}</td><td>-</td><td>-</td></tr>"
+            f"<td data-trip='{trip_idx}' data-order='0' data-min='0' data-suffix=''>{trip['departure']}</td><td>-</td><td>-</td></tr>"
         )
         for i, row in enumerate(trip["rows"], start=1):
             arrival_min = row["arrival_minutes"]
             data_min = f"{arrival_min}" if arrival_min is not None else ""
             arrival_value = row["arrival_time"] if row["arrival_time"] != "-" else ""
             arrival_cell = (
-                f"<input type='time' class='arrival-input' data-trip='{trip_idx}' "
+                f"<input type='time' class='arrival-input' data-trip='{trip_idx}' data-order='{i}' "
                 f"data-min='{data_min}' data-suffix='' value='{arrival_value}' "
                 f"oninput='recalcFromArrivalEdit(this)' onchange='recalcFromArrivalEdit(this)'>"
             )
@@ -1239,7 +1241,7 @@ def render_html(target_date, locations, trips_data):
             )
         parts.append(
             f"<tr><td>帰着</td><td colspan='2'>{trip['end_name']}</td><td>-</td><td>-</td>"
-            f"<td data-trip='{trip_idx}' data-min='{trip_minutes_attr}' "
+            f"<td data-trip='{trip_idx}' data-order='{final_order}' data-min='{trip_minutes_attr}' "
             f"data-suffix=' 頃 (目安)'>{trip['arrival']}</td><td>-</td><td>-</td></tr>"
         )
         parts.append("</table>")
@@ -1292,6 +1294,7 @@ def render_html(target_date, locations, trips_data):
         "}"
         "function recalcFromArrivalEdit(input){"
         "var tripIdx=input.getAttribute('data-trip');"
+        "var order=parseFloat(input.getAttribute('data-order'));"
         "var dep=document.getElementById('dep-'+tripIdx);"
         "if(!dep||!dep.value||!input.value)return;"
         "var base=timeToMinutes(dep.value);"
@@ -1304,28 +1307,25 @@ def render_html(target_date, locations, trips_data):
         "var cells=document.querySelectorAll('[data-trip=\"'+tripIdx+'\"]');"
         "cells.forEach(function(cell){"
         "if(cell===input)return;"
+        "var cellOrder=parseFloat(cell.getAttribute('data-order'));"
+        "if(isNaN(cellOrder)||cellOrder<=order)return;"
         "var min=cell.getAttribute('data-min');"
         "if(min===null||min==='')return;"
-        "var minVal=parseFloat(min);"
-        "if(minVal>oldMin){"
-        "var newCellMin=minVal+delta;"
+        "var newCellMin=parseFloat(min)+delta;"
         "cell.setAttribute('data-min',newCellMin);"
         "var isInput=(cell.tagName==='INPUT');"
         "var suffix=cell.getAttribute('data-suffix')||'';"
         "var text=minutesToTime(base+newCellMin)+suffix;"
         "if(isInput){cell.value=text;}else{cell.textContent=text;}"
-        "}"
         "});"
         "var arr=document.getElementById('arr-'+tripIdx);"
         "if(arr){"
+        "var arrOrder=parseFloat(arr.getAttribute('data-order'));"
         "var tripMin=arr.getAttribute('data-trip-minutes');"
-        "if(tripMin!==null&&tripMin!==''){"
-        "var tripMinVal=parseFloat(tripMin);"
-        "if(tripMinVal>oldMin){"
-        "var newTripMin=tripMinVal+delta;"
+        "if(!isNaN(arrOrder)&&arrOrder>order&&tripMin!==null&&tripMin!==''){"
+        "var newTripMin=parseFloat(tripMin)+delta;"
         "arr.setAttribute('data-trip-minutes',newTripMin);"
         "arr.value=minutesToTime(base+newTripMin);"
-        "}"
         "}"
         "}"
         "}"
