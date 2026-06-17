@@ -299,7 +299,10 @@ def geocode(address, cache):
         first_part = query.split()[0] if query.split() else query
         if first_part != query:
             result = _geocode_request(first_part)
-    cache[address] = result
+    if result is not None:
+        # 失敗(None)はキャッシュしない: 一時的な通信エラーなどで失敗した場合に、
+        # 次回以降もずっと失敗扱いになってしまうのを防ぐ
+        cache[address] = result
     return result
 
 
@@ -1225,7 +1228,8 @@ def render_html(target_date, locations, trips_data):
             arrival_value = row["arrival_time"] if row["arrival_time"] != "-" else ""
             arrival_cell = (
                 f"<input type='time' class='arrival-input' data-trip='{trip_idx}' "
-                f"data-min='{data_min}' data-suffix='' value='{arrival_value}'>"
+                f"data-min='{data_min}' data-suffix='' value='{arrival_value}' "
+                f"oninput='recalcFromArrivalEdit(this)' onchange='recalcFromArrivalEdit(this)'>"
             )
             parts.append(
                 f"<tr><td>{i}</td><td>{row['name']}</td><td>{row['address']}</td>"
@@ -1285,6 +1289,45 @@ def render_html(target_date, locations, trips_data):
         "var dep=document.getElementById('dep-'+tripIdx);"
         "dep.value=minutesToTime(timeToMinutes(arr.value)-parseFloat(tripMin));"
         "recalcFromDeparture(tripIdx);"
+        "}"
+        "function recalcFromArrivalEdit(input){"
+        "var tripIdx=input.getAttribute('data-trip');"
+        "var dep=document.getElementById('dep-'+tripIdx);"
+        "if(!dep||!dep.value||!input.value)return;"
+        "var base=timeToMinutes(dep.value);"
+        "var oldMin=parseFloat(input.getAttribute('data-min'));"
+        "var newMin=timeToMinutes(input.value)-base;"
+        "if(isNaN(oldMin))oldMin=newMin;"
+        "var delta=newMin-oldMin;"
+        "input.setAttribute('data-min',newMin);"
+        "if(delta===0)return;"
+        "var cells=document.querySelectorAll('[data-trip=\"'+tripIdx+'\"]');"
+        "cells.forEach(function(cell){"
+        "if(cell===input)return;"
+        "var min=cell.getAttribute('data-min');"
+        "if(min===null||min==='')return;"
+        "var minVal=parseFloat(min);"
+        "if(minVal>oldMin){"
+        "var newCellMin=minVal+delta;"
+        "cell.setAttribute('data-min',newCellMin);"
+        "var isInput=(cell.tagName==='INPUT');"
+        "var suffix=cell.getAttribute('data-suffix')||'';"
+        "var text=minutesToTime(base+newCellMin)+suffix;"
+        "if(isInput){cell.value=text;}else{cell.textContent=text;}"
+        "}"
+        "});"
+        "var arr=document.getElementById('arr-'+tripIdx);"
+        "if(arr){"
+        "var tripMin=arr.getAttribute('data-trip-minutes');"
+        "if(tripMin!==null&&tripMin!==''){"
+        "var tripMinVal=parseFloat(tripMin);"
+        "if(tripMinVal>oldMin){"
+        "var newTripMin=tripMinVal+delta;"
+        "arr.setAttribute('data-trip-minutes',newTripMin);"
+        "arr.value=minutesToTime(base+newTripMin);"
+        "}"
+        "}"
+        "}"
         "}"
         "</script>"
     )
