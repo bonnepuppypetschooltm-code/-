@@ -993,7 +993,12 @@ def build_route(target_date, config, events, geocode_enabled=True):
                 else:
                     departure = default_start
 
-            trip_minutes = estimate_trip_minutes(leg_minutes)
+            # 表示する「○分」(四捨五入後)と実際の到着時刻がずれて見えるのを防ぐため、
+            # 四捨五入した分数を使って到着時刻・帰着予定も計算する
+            rounded_leg_minutes = [round(m) if m is not None else None for m in leg_minutes]
+            rounded_cumulative_minutes = cumulative_arrival_minutes(rounded_leg_minutes, len(trip_stops))
+
+            trip_minutes = estimate_trip_minutes(rounded_leg_minutes)
             if trip_minutes is not None:
                 arrival = departure + datetime.timedelta(minutes=trip_minutes)
                 arrival_text = arrival.strftime("%H:%M") + " 頃 (目安)"
@@ -1038,11 +1043,11 @@ def build_route(target_date, config, events, geocode_enabled=True):
                 size = format_crate_sizes(stop.crate_sizes, default_crate_size)
                 prev_label = trip_stops[idx - 1].name if idx > 0 else start_name
                 next_label = trip_stops[idx + 1].name if idx + 1 < len(trip_stops) else end_name
-                from_minutes = leg_minutes[idx]
-                to_minutes = leg_minutes[idx + 1]
-                from_text = f"{prev_label}から約{round(from_minutes)}分" if from_minutes is not None else "-"
-                to_text = f"{next_label}まで約{round(to_minutes)}分" if to_minutes is not None else "-"
-                arrival_minutes = cumulative_minutes[idx]
+                from_minutes = rounded_leg_minutes[idx]
+                to_minutes = rounded_leg_minutes[idx + 1]
+                from_text = f"{prev_label}から約{from_minutes}分" if from_minutes is not None else "-"
+                to_text = f"{next_label}まで約{to_minutes}分" if to_minutes is not None else "-"
+                arrival_minutes = rounded_cumulative_minutes[idx]
                 if arrival_minutes is not None:
                     arrival_time_text = (departure + datetime.timedelta(minutes=arrival_minutes)).strftime("%H:%M")
                 else:
