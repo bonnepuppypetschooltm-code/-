@@ -480,11 +480,14 @@ def set_travel_time_override(config_path, config, events, target_date, name, fro
         entry["to_store"] = to_store
     overrides[address] = entry
 
-    # 既存の travel_time_overrides セクション(末尾にあるはず)を取り除き、
-    # 残りの内容(コメント等)はそのまま保持して、新しい内容を末尾に追加する
+    # 既存の travel_time_overrides セクションを取り除き、
+    # それ以外の内容(travel_time_overridesより後にある設定やコメントも含む)はそのまま保持して、
+    # 新しい内容を末尾に追加する
     with open(config_path, encoding="utf-8") as f:
         text = f.read()
-    text = re.split(r"^travel_time_overrides:", text, maxsplit=1, flags=re.MULTILINE)[0]
+    text = re.sub(
+        r"^travel_time_overrides:.*?(?=^\S.*:|\Z)", "", text, count=1, flags=re.MULTILINE | re.DOTALL
+    )
     text = text.rstrip() + "\n\n"
     text += yaml.dump({"travel_time_overrides": overrides}, allow_unicode=True, default_flow_style=False, sort_keys=False)
 
