@@ -942,9 +942,10 @@ def build_route(target_date, config, events, geocode_enabled=True):
         base_coords = geocode(base_address, cache)
         if parking_address:
             parking_coords = geocode(parking_address, cache)
+        sort_origin_coords = parking_coords if parking_address else base_coords
         for stop in pickup_stops + dropoff_stops:
             stop.coords = geocode(stop.address, cache)
-            stop.distance_from_base = haversine_km(base_coords, stop.coords)
+            stop.distance_from_base = haversine_km(sort_origin_coords, stop.coords)
         save_geocode_cache(cache)
 
     default_morning_start = datetime.datetime.combine(
