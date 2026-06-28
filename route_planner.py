@@ -943,22 +943,9 @@ def build_route(target_date, config, events, geocode_enabled=True):
         if parking_address:
             parking_coords = geocode(parking_address, cache)
         sort_origin_coords = parking_coords if parking_address else base_coords
-        overrides = config.get("travel_time_overrides") or {}
-        normalized_overrides = {normalize_address(addr): ov for addr, ov in overrides.items()}
-        for stop in pickup_stops:
+        for stop in pickup_stops + dropoff_stops:
             stop.coords = geocode(stop.address, cache)
             stop.distance_from_base = haversine_km(sort_origin_coords, stop.coords)
-            if "from_store" in normalized_overrides.get(normalize_address(stop.address), {}):
-                # 出発地点からの所要時間を指定済みのお宅は、その上書き設定が
-                # 確実に使われるよう必ず最初に訪問する(店舗から遠い順の並びの先頭に固定)
-                stop.distance_from_base = float("inf")
-        for stop in dropoff_stops:
-            stop.coords = geocode(stop.address, cache)
-            stop.distance_from_base = haversine_km(sort_origin_coords, stop.coords)
-            if "to_store" in normalized_overrides.get(normalize_address(stop.address), {}):
-                # 帰着地点までの所要時間を指定済みのお宅は、その上書き設定が
-                # 確実に使われるよう必ず最後に訪問する(店舗から遠い順の並びの末尾に固定)
-                stop.distance_from_base = float("-inf")
         save_geocode_cache(cache)
 
     default_morning_start = datetime.datetime.combine(
@@ -1067,6 +1054,7 @@ def build_route(target_date, config, events, geocode_enabled=True):
                 "avg_speed_kmh": config.get("avg_speed_kmh", 20),
                 "route_distance_factor": config.get("route_distance_factor", 1.3),
                 "stop_minutes": config.get("stop_minutes", 5),
+                "travel_time_overrides": config.get("travel_time_overrides"),
             }
             for idx, stop in enumerate(trip_stops):
                 if stop.requested_time:
@@ -1192,12 +1180,17 @@ def render_html(target_date, locations, trips_data, google_maps_api_key=None):
         start_lat, start_lon = trip["start_coords"] if trip["start_coords"] else ("", "")
         end_lat, end_lon = trip["end_coords"] if trip["end_coords"] else ("", "")
         base_lat, base_lon = trip["base_coords"] if trip["base_coords"] else ("", "")
+        overrides_json = json.dumps(
+            {normalize_address(addr): ov for addr, ov in (trip.get("travel_time_overrides") or {}).items()},
+            ensure_ascii=True,
+        ).replace("'", "&#39;")
         parts.append(
             f"<table data-route-trip='{trip_idx}' data-start-lat='{start_lat}' data-start-lon='{start_lon}' "
             f"data-end-lat='{end_lat}' data-end-lon='{end_lon}' data-speed='{trip['avg_speed_kmh']}' "
             f"data-factor='{trip['route_distance_factor']}' data-stopmin='{trip['stop_minutes']}' "
             f"data-start-name='{trip['start_name']}' data-end-name='{trip['end_name']}' "
-            f"data-base-lat='{base_lat}' data-base-lon='{base_lon}' data-base-name='{trip['base_name']}'>"
+            f"data-base-lat='{base_lat}' data-base-lon='{base_lon}' data-base-name='{trip['base_name']}' "
+            f"data-overrides='{overrides_json}'>"
             "<tr><th>順番</th><th>名前</th><th>住所</th><th>希望時刻</th><th>クレート</th><th>到着予定</th><th>ここまで</th><th>次まで</th></tr>"
         )
         final_order = len(trip["rows"]) + 1
@@ -1228,7 +1221,8 @@ def render_html(target_date, locations, trips_data, google_maps_api_key=None):
                 "<button type='button' class='move-btn' onclick='insertShopAfter(this)'>+店舗</button>"
             )
             parts.append(
-                f"<tr class='stop-row' data-lat='{lat}' data-lon='{lon}' data-name='{row['name']}'>"
+                f"<tr class='stop-row' data-lat='{lat}' data-lon='{lon}' data-name='{row['name']}' "
+                f"data-address=\"{normalize_address(row['address']).replace(chr(39), '&#39;')}\">"
                 f"<td class='order-cell'>{order_cell}</td><td>{row['name']}</td><td>{row['address']}</td>"
                 f"<td>{row['time']}</td><td>{row['crate']}</td>"
                 f"<td>{arrival_cell}</td>"
@@ -1412,10 +1406,11 @@ def render_html(target_date, locations, trips_data, google_maps_api_key=None):
         "var stopMin=parseFloat(table.getAttribute('data-stopmin'));"
         "var startName=table.getAttribute('data-start-name');"
         "var endName=table.getAttribute('data-end-name');"
+        "var overrides=JSON.parse(table.getAttribute('data-overrides')||'{}');"
         "var rows=Array.prototype.slice.call(table.querySelectorAll('tr.stop-row'));"
         "var points=[{lat:startLat,lon:startLon,name:startName}];"
         "rows.forEach(function(r){"
-        "points.push({lat:parseFloat(r.getAttribute('data-lat')),lon:parseFloat(r.getAttribute('data-lon')),name:r.getAttribute('data-name')});"
+        "points.push({lat:parseFloat(r.getAttribute('data-lat')),lon:parseFloat(r.getAttribute('data-lon')),name:r.getAttribute('data-name'),address:r.getAttribute('data-address')});"
         "});"
         "points.push({lat:endLat,lon:endLon,name:endName});"
         "var legs=[];"
@@ -1426,6 +1421,14 @@ def render_html(target_date, locations, trips_data, google_maps_api_key=None):
         "var min=km*factor/speed*60;"
         "if(i>0){min+=stopMin;}"
         "legs.push(min);"
+        "}"
+        "if(rows.length){"
+        "var firstAddr=points[1].address;"
+        "var firstOv=firstAddr?overrides[firstAddr]:null;"
+        "if(firstOv&&'from_store' in firstOv){legs[0]=firstOv.from_store;}"
+        "var lastAddr=points[points.length-2].address;"
+        "var lastOv=lastAddr?overrides[lastAddr]:null;"
+        "if(lastOv&&'to_store' in lastOv){legs[legs.length-1]=lastOv.to_store;}"
         "}"
         "var dep=document.getElementById('dep-'+tripIdx);"
         "var base=dep&&dep.value?timeToMinutes(dep.value):null;"
