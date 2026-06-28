@@ -38,7 +38,7 @@ CAR_MARK = "🚗"
 # 半角 [] () と 全角 ［］（） の両方に対応
 TAG_PATTERN = re.compile(r"[\[(［（]([^\])］）]*)[\])］）]")
 # 「8:00」「8：00」「8時」「8時30分」のいずれの書き方にも対応する
-TIME_PATTERN = re.compile(r"(朝|夕)?(\d{1,2})(?:[:：](\d{2})|時(?:(\d{1,2})分)?)(まで|以降)?")
+TIME_PATTERN = re.compile(r"(朝|夕方|夕)?(\d{1,2})(?:[:：](\d{2})|時(?:(\d{1,2})分)?)(まで|以降)?")
 # 連泊ホテルの「(1/2日目)」のような表記
 DAY_PATTERN = re.compile(r"\((\d+)/(\d+)日目\)")
 
@@ -606,7 +606,7 @@ def classify_stop(name, tag_text, location, day_info=None):
         time_type = "after" if suffix == "以降" else "by"
         if prefix == "朝":
             pickup_time, pickup_time_type = t, time_type
-        elif prefix == "夕":
+        elif prefix in ("夕", "夕方"):
             dropoff_time, dropoff_time_type = t, time_type
         else:
             unlabeled_times.append((t, time_type))
