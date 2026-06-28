@@ -943,9 +943,22 @@ def build_route(target_date, config, events, geocode_enabled=True):
         if parking_address:
             parking_coords = geocode(parking_address, cache)
         sort_origin_coords = parking_coords if parking_address else base_coords
-        for stop in pickup_stops + dropoff_stops:
+        overrides = config.get("travel_time_overrides") or {}
+        normalized_overrides = {normalize_address(addr): ov for addr, ov in overrides.items()}
+        for stop in pickup_stops:
             stop.coords = geocode(stop.address, cache)
             stop.distance_from_base = haversine_km(sort_origin_coords, stop.coords)
+            if "from_store" in normalized_overrides.get(normalize_address(stop.address), {}):
+                # 出発地点からの所要時間を指定済みのお宅は、その上書き設定が
+                # 確実に使われるよう必ず最初に訪問する(店舗から遠い順の並びの先頭に固定)
+                stop.distance_from_base = float("inf")
+        for stop in dropoff_stops:
+            stop.coords = geocode(stop.address, cache)
+            stop.distance_from_base = haversine_km(sort_origin_coords, stop.coords)
+            if "to_store" in normalized_overrides.get(normalize_address(stop.address), {}):
+                # 帰着地点までの所要時間を指定済みのお宅は、その上書き設定が
+                # 確実に使われるよう必ず最後に訪問する(店舗から遠い順の並びの末尾に固定)
+                stop.distance_from_base = float("-inf")
         save_geocode_cache(cache)
 
     default_morning_start = datetime.datetime.combine(
