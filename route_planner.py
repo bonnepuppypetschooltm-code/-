@@ -264,6 +264,20 @@ def estimate_leg_minutes(start_coords, end_coords, stops, avg_speed_kmh, route_d
     normalized_overrides = {
         normalize_address(addr): override for addr, override in travel_time_overrides.items()
     }
+    # カレンダーの「場所」欄は日によって表記が微妙に違うことがあるため、
+    # 住所が一致しない場合は登録時の名前(name)でも一致を試みる
+    name_overrides = {
+        override["name"]: override for override in travel_time_overrides.values() if override.get("name")
+    }
+
+    def lookup_override(stop):
+        override = normalized_overrides.get(normalize_address(stop.address))
+        if override:
+            return override
+        for reg_name, override in name_overrides.items():
+            if reg_name in stop.name or stop.name in reg_name:
+                return override
+        return {}
 
     points = [start_coords] + [s.coords for s in stops] + [end_coords]
     legs = []
@@ -275,10 +289,10 @@ def estimate_leg_minutes(start_coords, end_coords, stops, avg_speed_kmh, route_d
             legs.append(km * route_distance_factor / avg_speed_kmh * 60)
 
     if stops:
-        first_override = normalized_overrides.get(normalize_address(stops[0].address), {})
+        first_override = lookup_override(stops[0])
         if "from_store" in first_override:
             legs[0] = first_override["from_store"]
-        last_override = normalized_overrides.get(normalize_address(stops[-1].address), {})
+        last_override = lookup_override(stops[-1])
         if "to_store" in last_override:
             legs[-1] = last_override["to_store"]
 
@@ -474,6 +488,7 @@ def set_travel_time_override(config_path, config, events, target_date, name, fro
             del overrides[existing_addr]
 
     entry = overrides.get(address, {})
+    entry["name"] = name
     if from_store is not None:
         entry["from_store"] = from_store
     if to_store is not None:
