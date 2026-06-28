@@ -944,7 +944,7 @@ def build_route(target_date, config, events, geocode_enabled=True):
     trips_data = []
     for label, stops, default_start, default_is_arrival_target, start_info, end_info in (
         ("朝のお迎え便", pickup_stops, default_morning_start, False, parking_info, base_info),
-        ("夕方の送り便", dropoff_stops, default_evening_start, True, base_info, parking_info),
+        ("夕方の送り便", dropoff_stops, default_evening_start, True, parking_info, parking_info),
     ):
         start_address, start_name, start_coords, start_short = start_info
         end_address, end_name, end_coords, end_short = end_info
