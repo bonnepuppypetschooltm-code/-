@@ -1030,6 +1030,8 @@ def build_route(target_date, config, events, geocode_enabled=True):
                 "embed_url": build_embed_url(start_address, end_address, [s.address for s in trip_stops]),
                 "start_coords": start_coords,
                 "end_coords": end_coords,
+                "base_name": base_name,
+                "base_coords": base_coords,
                 "avg_speed_kmh": config.get("avg_speed_kmh", 20),
                 "route_distance_factor": config.get("route_distance_factor", 1.3),
                 "stop_minutes": config.get("stop_minutes", 5),
@@ -1157,11 +1159,13 @@ def render_html(target_date, locations, trips_data, google_maps_api_key=None):
             parts.append("<p class='capacity-note'>満載です</p>")
         start_lat, start_lon = trip["start_coords"] if trip["start_coords"] else ("", "")
         end_lat, end_lon = trip["end_coords"] if trip["end_coords"] else ("", "")
+        base_lat, base_lon = trip["base_coords"] if trip["base_coords"] else ("", "")
         parts.append(
             f"<table data-route-trip='{trip_idx}' data-start-lat='{start_lat}' data-start-lon='{start_lon}' "
             f"data-end-lat='{end_lat}' data-end-lon='{end_lon}' data-speed='{trip['avg_speed_kmh']}' "
             f"data-factor='{trip['route_distance_factor']}' data-stopmin='{trip['stop_minutes']}' "
-            f"data-start-name='{trip['start_name']}' data-end-name='{trip['end_name']}'>"
+            f"data-start-name='{trip['start_name']}' data-end-name='{trip['end_name']}' "
+            f"data-base-lat='{base_lat}' data-base-lon='{base_lon}' data-base-name='{trip['base_name']}'>"
             "<tr><th>順番</th><th>名前</th><th>住所</th><th>希望時刻</th><th>クレート</th><th>到着予定</th><th>ここまで</th><th>次まで</th></tr>"
         )
         final_order = len(trip["rows"]) + 1
@@ -1329,9 +1333,9 @@ def render_html(target_date, locations, trips_data, google_maps_api_key=None):
         "function insertShopAfter(button){"
         "var row=button.closest('tr');"
         "var table=row.closest('table');"
-        "var startLat=table.getAttribute('data-start-lat');"
-        "var startLon=table.getAttribute('data-start-lon');"
-        "var startName=table.getAttribute('data-start-name')||'店舗';"
+        "var startLat=table.getAttribute('data-base-lat');"
+        "var startLon=table.getAttribute('data-base-lon');"
+        "var startName=table.getAttribute('data-base-name')||'店舗';"
         "var newRow=document.createElement('tr');"
         "newRow.className='stop-row shop-row';"
         "newRow.setAttribute('data-lat',startLat);"
