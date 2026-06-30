@@ -284,7 +284,7 @@ def haversine_km(p1, p2):
     return 2 * r * math.asin(math.sqrt(a))
 
 
-def estimate_leg_minutes(start_coords, end_coords, stops, avg_speed_kmh, route_distance_factor=1.0, travel_time_overrides=None, stop_minutes=0, osrm_cache=None):
+def estimate_leg_minutes(start_coords, end_coords, stops, avg_speed_kmh, route_distance_factor=1.0, travel_time_overrides=None, stop_minutes=0, osrm_cache=None, osrm_time_factor=1.0):
     """出発地点 -> 各お宅 -> 帰着地点 を1区間ずつ移動した場合の所要時間(分)のリストを返す。
     結果は (len(stops) + 1) 件で、先頭が「出発地点 -> 最初のお宅」、
     末尾が「最後のお宅 -> 帰着地点」。座標が取得できない区間は None になる。
@@ -325,6 +325,8 @@ def estimate_leg_minutes(start_coords, end_coords, stops, avg_speed_kmh, route_d
         minutes = None
         if osrm_cache is not None:
             minutes = osrm_minutes(points[i], points[i + 1], osrm_cache)
+            if minutes is not None:
+                minutes *= osrm_time_factor
         if minutes is None:
             km = haversine_km(points[i], points[i + 1])
             if km is None:
@@ -433,7 +435,7 @@ def evaluate_departure(trip_stops, leg_minutes, target_date, buffer_minutes):
 
 def order_stops_for_schedule(trip_stops, start_coords, end_coords, avg_speed_kmh, route_distance_factor,
                               travel_time_overrides, stop_minutes, target_date, buffer_minutes,
-                              is_dropoff, max_anchors=7, osrm_cache=None):
+                              is_dropoff, max_anchors=7, osrm_cache=None, osrm_time_factor=1.0):
     """時刻指定のあるお宅(アンカー)の順番を入れ替えて、すべての希望時刻に
     なるべく合うような訪問順を探す。
 
@@ -461,7 +463,7 @@ def order_stops_for_schedule(trip_stops, start_coords, end_coords, avg_speed_kmh
     for candidate_stops in candidates:
         leg_minutes = estimate_leg_minutes(
             start_coords, end_coords, candidate_stops, avg_speed_kmh, route_distance_factor,
-            travel_time_overrides, stop_minutes, osrm_cache,
+            travel_time_overrides, stop_minutes, osrm_cache, osrm_time_factor,
         )
         departure, margin, cumulative = evaluate_departure(
             candidate_stops, leg_minutes, target_date, buffer_minutes
@@ -1049,6 +1051,7 @@ def build_route(target_date, config, events, geocode_enabled=True):
                 buffer_minutes,
                 is_dropoff=default_is_arrival_target,
                 osrm_cache=osrm_cache,
+                osrm_time_factor=config.get("osrm_time_factor", 1.8),
             )
 
             if departure is None:
