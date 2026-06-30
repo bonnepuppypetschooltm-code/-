@@ -229,6 +229,46 @@ def geocode(address, cache):
     return result
 
 
+OSRM_CACHE_FILE = ".osrm_cache.json"
+OSRM_URL = "https://router.project-osrm.org/route/v1/driving/"
+
+
+def load_osrm_cache():
+    if os.path.exists(OSRM_CACHE_FILE):
+        with open(OSRM_CACHE_FILE, encoding="utf-8") as f:
+            return json.load(f)
+    return {}
+
+
+def save_osrm_cache(cache):
+    with open(OSRM_CACHE_FILE, "w", encoding="utf-8") as f:
+        json.dump(cache, f, ensure_ascii=False, indent=2)
+
+
+def osrm_minutes(p1, p2, cache):
+    """OSRM(無料・APIキー不要の経路計算サービス)で実際の道なりの所要時間(分)を取得する。
+    通信に失敗した場合や区間が短すぎる場合は None を返し、呼び出し側で直線距離の
+    推定にフォールバックする。
+    """
+    if p1 is None or p2 is None:
+        return None
+    key = f"{p1[0]:.5f},{p1[1]:.5f}|{p2[0]:.5f},{p2[1]:.5f}"
+    if key in cache:
+        return cache[key]
+    url = f"{OSRM_URL}{p1[1]},{p1[0]};{p2[1]},{p2[0]}?overview=false"
+    try:
+        req = urllib.request.Request(url, headers={"User-Agent": "route-planner/1.0"})
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            data = json.load(resp)
+        if data.get("code") == "Ok" and data.get("routes"):
+            minutes = data["routes"][0]["duration"] / 60.0
+            cache[key] = minutes
+            return minutes
+    except Exception:
+        pass
+    return None
+
+
 def haversine_km(p1, p2):
     if p1 is None or p2 is None:
         return None
@@ -244,7 +284,7 @@ def haversine_km(p1, p2):
     return 2 * r * math.asin(math.sqrt(a))
 
 
-def estimate_leg_minutes(start_coords, end_coords, stops, avg_speed_kmh, route_distance_factor=1.0, travel_time_overrides=None, stop_minutes=0):
+def estimate_leg_minutes(start_coords, end_coords, stops, avg_speed_kmh, route_distance_factor=1.0, travel_time_overrides=None, stop_minutes=0, osrm_cache=None):
     """出発地点 -> 各お宅 -> 帰着地点 を1区間ずつ移動した場合の所要時間(分)のリストを返す。
     結果は (len(stops) + 1) 件で、先頭が「出発地点 -> 最初のお宅」、
     末尾が「最後のお宅 -> 帰着地点」。座標が取得できない区間は None になる。
@@ -282,11 +322,16 @@ def estimate_leg_minutes(start_coords, end_coords, stops, avg_speed_kmh, route_d
     points = [start_coords] + [s.coords for s in stops] + [end_coords]
     legs = []
     for i in range(len(points) - 1):
-        km = haversine_km(points[i], points[i + 1])
-        if km is None:
-            legs.append(None)
-        else:
-            legs.append(km * route_distance_factor / avg_speed_kmh * 60)
+        minutes = None
+        if osrm_cache is not None:
+            minutes = osrm_minutes(points[i], points[i + 1], osrm_cache)
+        if minutes is None:
+            km = haversine_km(points[i], points[i + 1])
+            if km is None:
+                minutes = None
+            else:
+                minutes = km * route_distance_factor / avg_speed_kmh * 60
+        legs.append(minutes)
 
     if stops:
         first_override = lookup_override(stops[0])
@@ -388,7 +433,7 @@ def evaluate_departure(trip_stops, leg_minutes, target_date, buffer_minutes):
 
 def order_stops_for_schedule(trip_stops, start_coords, end_coords, avg_speed_kmh, route_distance_factor,
                               travel_time_overrides, stop_minutes, target_date, buffer_minutes,
-                              is_dropoff, max_anchors=7):
+                              is_dropoff, max_anchors=7, osrm_cache=None):
     """時刻指定のあるお宅(アンカー)の順番を入れ替えて、すべての希望時刻に
     なるべく合うような訪問順を探す。
 
@@ -416,7 +461,7 @@ def order_stops_for_schedule(trip_stops, start_coords, end_coords, avg_speed_kmh
     for candidate_stops in candidates:
         leg_minutes = estimate_leg_minutes(
             start_coords, end_coords, candidate_stops, avg_speed_kmh, route_distance_factor,
-            travel_time_overrides, stop_minutes,
+            travel_time_overrides, stop_minutes, osrm_cache,
         )
         departure, margin, cumulative = evaluate_departure(
             candidate_stops, leg_minutes, target_date, buffer_minutes
@@ -937,6 +982,7 @@ def build_route(target_date, config, events, geocode_enabled=True):
 
     base_coords = None
     parking_coords = None
+    osrm_cache = load_osrm_cache()
     if geocode_enabled:
         cache = load_geocode_cache()
         base_coords = geocode(base_address, cache)
@@ -1002,6 +1048,7 @@ def build_route(target_date, config, events, geocode_enabled=True):
                 target_date,
                 buffer_minutes,
                 is_dropoff=default_is_arrival_target,
+                osrm_cache=osrm_cache,
             )
 
             if departure is None:
@@ -1096,6 +1143,7 @@ def build_route(target_date, config, events, geocode_enabled=True):
         "parking_name": parking_name if parking_address else None,
         "parking_address": parking_address,
     }
+    save_osrm_cache(osrm_cache)
     return locations, trips_data
 
 
